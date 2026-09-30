@@ -3,6 +3,9 @@
 package com.chaomixian.vflow.core.workflow.module.system
 
 import android.content.Context
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import com.chaomixian.vflow.R
@@ -13,9 +16,12 @@ import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.basic.VBoolean
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.*
 import kotlin.coroutines.resume
 import kotlin.math.max
@@ -23,6 +29,17 @@ import kotlin.math.max
 /**
  * TTS文本转语音模块
  * 使用Android系统自带的TextToSpeech API将文本转换为语音并朗读
+ *
+ * 关键约束（踩坑记录）：
+ * 1. TextToSpeech 构造函数必须在**持有 Looper 的主线程**上调用。工作流执行在
+ *    Dispatchers.Default 线程池上运行，若直接 new TextToSpeech()，Binder/Handler
+ *    初始化会失败且 onInit 回调根本不被调用（静默失败），随后 speak() 必然返回 ERROR。
+ * 2. 必须等待 onInit(SUCCESS) 回调后才能调用 speak()，不能用 delay(500) 猜时间。
+ *    注意不能改用 tts.engines 是否为空来判断：getEngines() 只查询 PackageManager
+ *    的已安装引擎列表，mEnginesHelper 在构造函数中就已赋值，与服务是否连接无关，
+ *    构造后立即调用即返回非空列表，无法反映真实连接状态。
+ * 3. shutdown() 必须在主线程调用；且在协程被取消的分支中不能用 withContext 切线程
+ *    （取消态的协程不会再调度），必须用 Handler.post 这类不挂起的方式。
  */
 class TextToSpeechModule : BaseModule() {
     companion object {
@@ -42,6 +59,9 @@ class TextToSpeechModule : BaseModule() {
 
         private const val QUEUE_FLUSH = "flush"
         private const val QUEUE_ADD = "add"
+
+        /** onInit 回调等待上限：部分引擎（如离线包缺失、OEM 定制引擎）冷启动可能需要数秒 */
+        private const val INIT_TIMEOUT_MS = 8000L
 
         private val LANGUAGE_OPTIONS = listOf(
             LANGUAGE_AUTO,
@@ -272,153 +292,220 @@ class TextToSpeechModule : BaseModule() {
 
         onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_device_text_to_speech_initializing)))
 
-        // 初始化TTS
-        val tts = TextToSpeech(appContext) { status ->
-            // 初始化完成回调
+        // ===== 1) 在主线程创建 TextToSpeech，并真实等待 onInit 回调 =====
+        // 修复要点：TextToSpeech 构造函数依赖持有 Looper 的主线程，且必须等 onInit
+        // 回调后才能 speak()。TextToSpeech 没有 setOnInitListener()，因此把构造时
+        // 注册的回调桥接到 CompletableDeferred 上——onInit(SUCCESS) 只在
+        // SetupConnectionAsyncTask 完成、mEstablished 置位后才派发，是唯一可靠的
+        // 「引擎已就绪」信号。原来的 delay(500) 无法保证这一点。
+        val initSignal = CompletableDeferred<Int>()
+        val tts = try {
+            withContextMain { TextToSpeech(appContext) { status -> initSignal.complete(status) } }
+        } catch (e: Exception) {
+            return ExecutionResult.Failure(
+                appContext.getString(R.string.error_vflow_device_text_to_speech_init_failed),
+                e.localizedMessage
+                    ?: appContext.getString(R.string.error_vflow_device_text_to_speech_engine_error)
+            )
         }
 
-        // 等待TTS初始化完成
-        kotlinx.coroutines.delay(500)
-
-        // 注意：如果TTS初始化失败，后续的speak()会返回错误
+        val mainHandler = Handler(Looper.getMainLooper())
 
         return try {
-            // 设置语言
-            if (language != LANGUAGE_AUTO) {
-                val locale = when (language) {
-                    LANGUAGE_ZH_CN -> Locale.CHINA
-                    LANGUAGE_EN_US -> Locale.US
-                    LANGUAGE_EN_GB -> Locale.UK
-                    LANGUAGE_JA_JP -> Locale.JAPAN
-                    LANGUAGE_KO_KR -> Locale.KOREA
-                    LANGUAGE_FR_FR -> Locale.FRANCE
-                    LANGUAGE_DE_DE -> Locale.GERMANY
-                    LANGUAGE_ES_ES -> Locale("es", "ES")
-                    LANGUAGE_IT_IT -> Locale.ITALY
-                    LANGUAGE_RU_RU -> Locale("ru", "RU")
-                    LANGUAGE_TH_TH -> Locale("th", "TH")
-                    LANGUAGE_AR_SA -> Locale("ar", "SA")
-                    else -> Locale.getDefault()
-                }
-
-                val langResult = tts.setLanguage(locale)
-                if (langResult == TextToSpeech.LANG_MISSING_DATA || langResult == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    // 语言不支持，使用默认语言
-                    tts.language = Locale.getDefault()
-                }
+            // 等待 onInit 回调；超时（引擎无响应）或返回非 SUCCESS 都视为引擎不可用。
+            // 若此时协程被取消，withTimeoutOrNull 会把取消异常向外抛，交由下方
+            // CancellationException 分支统一释放资源。
+            val initStatus = withTimeoutOrNull(INIT_TIMEOUT_MS) { initSignal.await() }
+            if (initStatus != TextToSpeech.SUCCESS) {
+                safeShutdown(tts)
+                return ExecutionResult.Failure(
+                    appContext.getString(R.string.error_vflow_device_text_to_speech_init_failed),
+                    appContext.getString(R.string.error_vflow_device_text_to_speech_engine_error)
+                )
             }
 
-            // 设置语速和语调
-            tts.setSpeechRate(speechRate.toFloat())
-            tts.setPitch(pitch.toFloat())
+            // ===== 2) 设置语言 / 语速 / 语调（全部在主线程） =====
+            withContextMain {
+                if (language != LANGUAGE_AUTO) {
+                    val locale = languageToLocale(language)
+                    val langResult = tts.setLanguage(locale)
+                    if (langResult == TextToSpeech.LANG_MISSING_DATA ||
+                        langResult == TextToSpeech.LANG_NOT_SUPPORTED
+                    ) {
+                        // 语言不支持，回退到默认语言（不静默失败，尽力朗读）
+                        tts.language = Locale.getDefault()
+                    }
+                }
+                tts.setSpeechRate(speechRate.toFloat())
+                tts.setPitch(pitch.toFloat())
+            }
 
             onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_device_text_to_speech_speaking)))
 
-            // 执行朗读
-            if (awaitCompletion) {
-                // 等待朗读完成
-                val utteranceId = "vflow_tts_${System.currentTimeMillis()}"
+            val utteranceId = "vflow_tts_${System.currentTimeMillis()}"
 
+            // ===== 3) 朗读 =====
+            if (awaitCompletion) {
                 // 动态计算超时时间：根据文本长度和语速估算
                 // 假设平均语速为每分钟150字（正常语速1.0）
                 val estimatedDurationMs = ((resolvedText.length / 150.0) * 60000 / speechRate).toLong()
                 val timeoutMs = max(estimatedDurationMs + 5000, 10000) // 至少等待10秒，加上5秒缓冲
 
-                try {
-                    val speakResult = withTimeout(timeoutMs) {
+                val speakResult = try {
+                    withTimeout(timeoutMs) {
                         suspendCancellableCoroutine<Boolean> { continuation ->
-                            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                                override fun onStart(utteranceId: String?) {}
-                                override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                                    if (interrupted) {
-                                        // 被中断时也视为完成
-                                        continuation.resume(true)
+                            // 监听器必须在 speak() 之前设置，且设置在主线程
+                            mainHandler.post {
+                                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                                    override fun onStart(utteranceId: String?) {}
+
+                                    override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                                        // 被中断也视为本次朗读结束
+                                        if (continuation.isActive) continuation.resume(true)
                                     }
-                                }
-                                override fun onDone(utteranceId: String?) {
-                                    continuation.resume(true)
-                                }
-                                override fun onError(utteranceId: String?) {
+
+                                    override fun onDone(utteranceId: String?) {
+                                        if (continuation.isActive) continuation.resume(true)
+                                    }
+
+                                    @Deprecated("Deprecated in Java")
+                                    override fun onError(utteranceId: String?) {
+                                        if (continuation.isActive) continuation.resume(false)
+                                    }
+
+                                    override fun onError(utteranceId: String?, errorCode: Int) {
+                                        if (continuation.isActive) continuation.resume(false)
+                                    }
+                                })
+
+                                // speak() 带 utteranceId 必须在主线程调用，否则 onDone/onError 不会回调
+                                val result = tts.speak(
+                                    resolvedText,
+                                    if (queueMode == QUEUE_FLUSH) TextToSpeech.QUEUE_FLUSH
+                                    else TextToSpeech.QUEUE_ADD,
+                                    null,
+                                    utteranceId
+                                )
+
+                                if (result != TextToSpeech.SUCCESS && continuation.isActive) {
                                     continuation.resume(false)
                                 }
-                            })
-
-                            val result = tts.speak(
-                                resolvedText,
-                                if (queueMode == QUEUE_FLUSH) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
-                                null,
-                                utteranceId
-                            )
-
-                            if (result != TextToSpeech.SUCCESS) {
-                                continuation.resume(false)
                             }
                         }
                     }
+                } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                    safeShutdown(tts)
+                    return ExecutionResult.Failure(
+                        appContext.getString(R.string.error_vflow_device_text_to_speech_timeout),
+                        appContext.getString(R.string.error_vflow_device_text_to_speech_timeout_details)
+                    )
+                }
 
-                    tts.shutdown()
+                safeShutdown(tts)
 
-                    if (speakResult) {
-                        onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_device_text_to_speech_completed), 100))
-                        ExecutionResult.Success(mapOf("success" to VBoolean(true)))
-                    } else {
-                        ExecutionResult.Failure(
-                            appContext.getString(R.string.error_vflow_device_text_to_speech_failed),
-                            appContext.getString(R.string.error_vflow_device_text_to_speech_unknown)
+                if (speakResult) {
+                    onProgress(
+                        ProgressUpdate(
+                            appContext.getString(R.string.msg_vflow_device_text_to_speech_completed),
+                            100
                         )
-                    }
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    // 工作流被取消，停止TTS并释放资源
-                    tts.stop()
-                    tts.shutdown()
-                    throw e
+                    )
+                    ExecutionResult.Success(mapOf("success" to VBoolean(true)))
+                } else {
+                    ExecutionResult.Failure(
+                        appContext.getString(R.string.error_vflow_device_text_to_speech_failed),
+                        appContext.getString(R.string.error_vflow_device_text_to_speech_unknown)
+                    )
                 }
             } else {
-                // 不等待朗读完成，在后台播放
-                tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
-                    override fun onStop(utteranceId: String?, interrupted: Boolean) {
-                        tts.shutdown()
-                    }
-                    override fun onDone(utteranceId: String?) {
-                        tts.shutdown()
-                    }
-                    override fun onError(utteranceId: String?) {
-                        tts.shutdown()
-                    }
-                })
+                // 不等待朗读完成：注册监听器以便朗读结束后释放资源，然后立即返回
+                mainHandler.post {
+                    tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                        override fun onStart(utteranceId: String?) {}
 
-                tts.speak(
-                    resolvedText,
-                    if (queueMode == QUEUE_FLUSH) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD,
-                    null,
-                    "vflow_tts_${System.currentTimeMillis()}"
+                        override fun onStop(utteranceId: String?, interrupted: Boolean) {
+                            safeShutdown(tts)
+                        }
+
+                        override fun onDone(utteranceId: String?) {
+                            safeShutdown(tts)
+                        }
+
+                        @Deprecated("Deprecated in Java")
+                        override fun onError(utteranceId: String?) {
+                            safeShutdown(tts)
+                        }
+
+                        override fun onError(utteranceId: String?, errorCode: Int) {
+                            safeShutdown(tts)
+                        }
+                    })
+
+                    tts.speak(
+                        resolvedText,
+                        if (queueMode == QUEUE_FLUSH) TextToSpeech.QUEUE_FLUSH
+                        else TextToSpeech.QUEUE_ADD,
+                        null,
+                        utteranceId
+                    )
+                }
+
+                onProgress(
+                    ProgressUpdate(
+                        appContext.getString(R.string.msg_vflow_device_text_to_speech_started),
+                        100
+                    )
                 )
-
-                onProgress(ProgressUpdate(appContext.getString(R.string.msg_vflow_device_text_to_speech_started), 100))
                 ExecutionResult.Success(mapOf("success" to VBoolean(true)))
             }
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            tts.shutdown()
-            ExecutionResult.Failure(
-                appContext.getString(R.string.error_vflow_device_text_to_speech_timeout),
-                appContext.getString(R.string.error_vflow_device_text_to_speech_timeout_details)
-            )
         } catch (e: kotlinx.coroutines.CancellationException) {
-            // 工作流被取消，确保TTS资源被释放
-            try {
-                tts.stop()
-                tts.shutdown()
-            } catch (_: Exception) {
-                // 忽略关闭错误
-            }
+            // 工作流被取消，确保TTS资源被释放。
+            // 注意：这里不能用 withContext(Dispatchers.Main) —— 协程已是取消态，
+            // 切换线程的挂起调用不会再被调度，清理代码会被静默跳过。
+            // safeShutdown() 内部用 Handler.post，不挂起，取消场景下依然会执行。
+            safeShutdown(tts)
             throw e // 重新抛出，让工作流引擎正确处理取消
         } catch (e: Exception) {
-            tts.shutdown()
+            safeShutdown(tts)
             ExecutionResult.Failure(
                 appContext.getString(R.string.error_vflow_device_text_to_speech_failed),
                 e.localizedMessage ?: appContext.getString(R.string.error_vflow_device_text_to_speech_unknown)
             )
+        }
+    }
+
+    // ---------- 内部工具 ----------
+
+    private fun languageToLocale(language: String): Locale = when (language) {
+        LANGUAGE_ZH_CN -> Locale.CHINA
+        LANGUAGE_EN_US -> Locale.US
+        LANGUAGE_EN_GB -> Locale.UK
+        LANGUAGE_JA_JP -> Locale.JAPAN
+        LANGUAGE_KO_KR -> Locale.KOREA
+        LANGUAGE_FR_FR -> Locale.FRANCE
+        LANGUAGE_DE_DE -> Locale.GERMANY
+        LANGUAGE_ES_ES -> Locale("es", "ES")
+        LANGUAGE_IT_IT -> Locale.ITALY
+        LANGUAGE_RU_RU -> Locale("ru", "RU")
+        LANGUAGE_TH_TH -> Locale("th", "TH")
+        LANGUAGE_AR_SA -> Locale("ar", "SA")
+        else -> Locale.getDefault()
+    }
+
+    /** 在主线程执行，保证 TTS 的构造 / speak / shutdown 满足 Looper 要求 */
+    private suspend fun <T> withContextMain(block: () -> T): T =
+        withContext(Dispatchers.Main) { block() }
+
+    private fun safeShutdown(tts: TextToSpeech) {
+        try {
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    tts.stop()
+                    tts.shutdown()
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
         }
     }
 }

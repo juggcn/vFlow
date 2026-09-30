@@ -27,7 +27,23 @@ object AlarmTriggerScheduler {
             return
         }
 
-        when (trigger.type) {
+        // Android 12+ 精确闹钟需 SCHEDULE_EXACT_ALARM 授权（Android 14 起对新装应用默认不授予）。
+        // 未授权时 setAlarmClock / setExactAndAllowWhileIdle / setExact 会抛 SecurityException，
+        // 因此先检查，未授权则降级为非精确闹钟，保证工作流仍能触发。
+        val canScheduleExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            alarmManager.canScheduleExactAlarms()
+        } else {
+            true
+        }
+
+        if (!canScheduleExact) {
+            DebugLogger.w(TAG, "未获得精确闹钟权限，降级为非精确闹钟：'${trigger.workflowName}'")
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                nextTriggerTime.timeInMillis,
+                intent
+            )
+        } else when (trigger.type) {
             TimeTriggerModule().id -> {
                 val alarmClockInfo = AlarmManager.AlarmClockInfo(nextTriggerTime.timeInMillis, intent)
                 alarmManager.setAlarmClock(alarmClockInfo, intent)

@@ -70,6 +70,10 @@
         <intent>
             <action android:name="com.chaomixian.vflow.extension.MODULE_PROVIDER" />
         </intent>
+        <!-- 声明 TTS 服务查询，Android 11+（targetSdk 30+）必需，否则可能枚举不到系统 TTS 引擎 -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
 
