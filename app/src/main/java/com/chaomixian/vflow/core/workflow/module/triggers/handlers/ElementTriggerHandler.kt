@@ -35,6 +35,9 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
     // 存储所有工作流的状态（动态创建）
     private val triggerStates = CopyOnWriteArrayList<ElementTriggerState>()
 
+    /** 触发器参数指纹，用于判断参数是否被改动、需要重建状态 */
+    private val triggerFingerprints = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
     // Transform 实例
     private val transform = createTransform()
 
@@ -98,6 +101,7 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
         recheckJob?.cancel()
         recheckJob = null
         triggerStates.clear()
+        triggerFingerprints.clear()
     }
 
     /**
@@ -107,7 +111,16 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
         val currentTriggerIds = listeningTriggers.map { it.triggerId }.toSet()
 
         triggerStates.removeAll { state ->
-            !currentTriggerIds.contains(state.trigger.triggerId)
+            val id = state.trigger.triggerId
+            if (!currentTriggerIds.contains(id)) return@removeAll true
+            // 参数被改过（选择器、冷却、延迟等）：销毁旧状态，下面按新参数重建。
+            // 否则改完工作流必须重启无障碍服务才生效。
+            if (triggerFingerprints[id] != state.trigger.fingerprint()) {
+                DebugLogger.d(TAG, "触发器 '$id' 参数已变更，重建状态")
+                triggerFingerprints.remove(id)
+                return@removeAll true
+            }
+            false
         }
 
         for (trigger in listeningTriggers) {
@@ -115,6 +128,7 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
                 val state = createTriggerState(trigger)
                 if (state != null) {
                     triggerStates.add(state)
+                    triggerFingerprints[trigger.triggerId] = trigger.fingerprint()
                     DebugLogger.d(TAG, "加载触发器 '${trigger.triggerId}'")
                 }
             }
@@ -174,13 +188,22 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
         // 用于同一次检查中的去重（避免同一节点触发多个选择器）
         val matchedThisTime = mutableSetOf<Int?>()
 
+        // 同一轮检查内复用选择器查询结果：多个触发器常配同一个选择器，重复遍历整棵 UI 树没有意义
+        val queryCache = HashMap<Long, AccessibilityNodeInfo?>()
+
         for (state in triggerStates) {
             try {
                 // 1. 匹配选择器：任一窗口命中即可
                 var matchedNode: AccessibilityNodeInfo? = null
                 for (windowRoot in windowRoots) {
-                    val node = transform.querySelectorAll(windowRoot, state.selector, MatchOption(fastQuery = true))
-                        .firstOrNull()
+                    val cacheKey = queryCacheKey(windowRoot, state.selector)
+                    val node = if (queryCache.containsKey(cacheKey)) {
+                        queryCache[cacheKey]
+                    } else {
+                        transform.querySelectorAll(windowRoot, state.selector, MatchOption(fastQuery = true))
+                            .firstOrNull()
+                            .also { queryCache[cacheKey] = it }
+                    }
                     if (node != null) {
                         matchedNode = node
                         break

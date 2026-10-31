@@ -8,6 +8,8 @@ import com.chaomixian.vflow.core.workflow.module.data.*
 import com.chaomixian.vflow.core.workflow.module.file.*
 import com.chaomixian.vflow.core.workflow.module.integration.*
 import com.chaomixian.vflow.core.workflow.module.interaction.*
+import com.chaomixian.vflow.core.workflow.module.ui.UiTreeDumpModule
+import com.chaomixian.vflow.core.workflow.module.ui.WaitUiStableModule
 import com.chaomixian.vflow.core.workflow.module.logic.*
 import com.chaomixian.vflow.core.workflow.module.network.*
 import com.chaomixian.vflow.core.workflow.module.notification.*
@@ -92,6 +94,8 @@ object ModuleRegistry {
         // 界面交互
         register(FindTextModule(), context)
         register(FindElementModule(), context)
+        register(UiTreeDumpModule(), context)
+        register(WaitUiStableModule(), context)
         register(UiSelectorModule(), context)
         register(ClickModule(), context)
         register(ScreenOperationModule(), context)

@@ -1,6 +1,10 @@
 package com.chaomixian.vflow.core.workflow.module.triggers.handlers
 
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.graphics.Path
+import android.graphics.Rect
 import android.view.accessibility.AccessibilityNodeInfo
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.types.complex.VScreenElement
@@ -56,6 +60,12 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
     // 存储所有工作流的状态
     private val triggerStates = CopyOnWriteArrayList<GKDTriggerState>()
+
+    /** 触发器参数指纹，用于判断参数是否被改动、需要重建状态（否则改完要重启无障碍服务） */
+    private val triggerFingerprints = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** 单轮检查内共享的选择器查询缓存，配合 checkMutex 使用 */
+    private val passQueryCache = HashMap<Long, AccessibilityNodeInfo?>()
 
     // Transform 实例
     private val transform = createTransform()
@@ -120,6 +130,8 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         recheckJob?.cancel()
         recheckJob = null
         triggerStates.clear()
+        triggerFingerprints.clear()
+        passQueryCache.clear()
     }
 
     /**
@@ -129,7 +141,15 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         val currentTriggerIds = listeningTriggers.map { it.triggerId }.toSet()
 
         triggerStates.removeAll { state ->
-            !currentTriggerIds.contains(state.trigger.triggerId)
+            val id = state.trigger.triggerId
+            if (!currentTriggerIds.contains(id)) return@removeAll true
+            // 参数变了（订阅地址、规则组范围等）：丢弃旧状态，下面按新参数重建并重新解析订阅
+            if (triggerFingerprints[id] != state.trigger.fingerprint()) {
+                DebugLogger.d(TAG, "触发器 '$id' 参数已变更，重新加载 GKD 规则")
+                triggerFingerprints.remove(id)
+                return@removeAll true
+            }
+            false
         }
 
         for (trigger in listeningTriggers) {
@@ -137,6 +157,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                 val state = createTriggerState(trigger)
                 if (state != null) {
                     triggerStates.add(state)
+                    triggerFingerprints[trigger.triggerId] = trigger.fingerprint()
                     DebugLogger.d(TAG, "加载工作流 '${trigger.workflowName}' 的 GKD 规则")
                 }
             }
@@ -454,6 +475,9 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         // 解析 resetMatch
         val resetMatch = ruleObj["resetMatch"]?.jsonPrimitive?.content
 
+        // 解析规则自带动作
+        val action = parseAction(ruleObj["action"])
+
         // 解析选择器
         val matches = parseSelectors(ruleObj["matches"])
         val anyMatches = parseSelectors(ruleObj["anyMatches"])
@@ -490,9 +514,39 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
             actionMaximumKey = ruleObj["actionMaximumKey"]?.jsonPrimitive?.int,
             forcedTime = ruleObj["forcedTime"]?.jsonPrimitive?.long,
             priorityTime = ruleObj["priorityTime"]?.jsonPrimitive?.long,
-            priorityActionMaximum = ruleObj["priorityActionMaximum"]?.jsonPrimitive?.int
+            priorityActionMaximum = ruleObj["priorityActionMaximum"]?.jsonPrimitive?.int,
+            action = action
         )
     }
+
+    /**
+     * 解析规则的 action 字段。
+     *
+     * gkd 允许三种写法：
+     * - 字符串：`"back"`
+     * - 对象：`{ "type": "clickCenter", ... }`
+     * - 数组（多动作）：取第一个能识别出来的
+     *
+     * 只归一化成小写字符串返回，具体执行在 performTrigger 里分派。
+     */
+    private fun parseAction(element: JsonElement?): String? {
+        fun fromItem(item: JsonElement?): String? = when (item) {
+            null -> null
+            is kotlinx.serialization.json.JsonPrimitive -> item.contentLowerOrNull()
+            is JsonObject -> item["type"]?.jsonPrimitive?.contentLowerOrNull()
+            else -> null
+        }
+
+        return when (element) {
+            null -> null
+            is JsonArray -> element.firstNotNullOfOrNull { fromItem(it) }
+            else -> fromItem(element)
+        }
+    }
+
+    /** 取小写内容，非字符串字面量返回 null */
+    private fun kotlinx.serialization.json.JsonPrimitive.contentLowerOrNull(): String? =
+        if (this.isString || this.content.isNotBlank()) this.content.lowercase() else null
 
     /**
      * 解析选择器列表
@@ -590,6 +644,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         if (windowRoots.isEmpty()) return
 
         checkMutex.withLock {
+            passQueryCache.clear()
             checkAndTriggerWorkflowsLocked(context, packageName, className, windowRoots)
         }
     }
@@ -816,19 +871,79 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
             // 全部必须匹配
             var resultNode: AccessibilityNodeInfo? = null
             for (selector in selectors) {
-                resultNode = transform.querySelectorAll(rootNode, selector, matchOption).firstOrNull()
-                    ?: return null
+                resultNode = queryFirst(rootNode, selector, matchOption) ?: return null
             }
             resultNode
         } else {
             // 任一匹配即可
             for (selector in selectors) {
-                transform.querySelectorAll(rootNode, selector, matchOption).firstOrNull()?.let {
-                    return it
-                }
+                queryFirst(rootNode, selector, matchOption)?.let { return it }
             }
             null
         }
+    }
+
+    /**
+     * 单次查询首个命中节点，带本轮检查缓存。
+     *
+     * 订阅里几千条规则会反复查同一棵树，同一 (窗口, 选择器) 在一轮检查内结果必然一致，
+     * 缓存后可以省掉大量重复遍历；缓存只跨一轮，页面变化后会重建。
+     */
+    private fun queryFirst(
+        rootNode: AccessibilityNodeInfo,
+        selector: Selector,
+        matchOption: MatchOption
+    ): AccessibilityNodeInfo? {
+        val key = queryCacheKey(rootNode, selector)
+        if (passQueryCache.containsKey(key)) return passQueryCache[key]
+        val node = transform.querySelectorAll(rootNode, selector, matchOption).firstOrNull()
+        passQueryCache[key] = node
+        return node
+    }
+
+    /**
+     * 执行规则自带的动作。
+     *
+     * @param node 命中节点，用于取屏幕坐标
+     * @param action 已归一化为小写的动作名
+     * @return 是否执行成功
+     */
+    private fun performSelfAction(node: AccessibilityNodeInfo, action: String): Boolean {
+        val service = ServiceStateBus.getAccessibilityService() ?: return false
+        val rect = Rect()
+        runCatching { node.getBoundsInScreen(rect) }
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+
+        return when (action) {
+            "back" -> runCatching {
+                service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+            }.getOrDefault(false)
+
+            "clickcenter" -> dispatchTap(service, cx, cy, 100L)
+
+            // 优先走无障碍标准长按；节点不支持时退回坐标长按
+            "longclick" -> runCatching {
+                node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+            }.getOrDefault(false) || dispatchTap(service, cx, cy, 600L)
+
+            else -> false
+        }
+    }
+
+    /** 在指定坐标派发一次手势；durationMs 大于 500 即视为长按 */
+    private fun dispatchTap(
+        service: AccessibilityService,
+        x: Int,
+        y: Int,
+        durationMs: Long
+    ): Boolean {
+        if (x < 0 || y < 0) return false
+        val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+            .build()
+        return runCatching { service.dispatchGesture(gesture, null, null) }.getOrDefault(false)
     }
 
     /**
@@ -874,6 +989,19 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
         // 更新最后触发的规则（用于 preRules 检查）
         state.lastTriggerRule = rule
+
+        // 规则自带非点击动作（back / clickCenter / longClick）由触发器直接执行，
+        // 不再把命中节点交给工作流去点 —— 否则 back 规则会变成「点广告里的某个控件」，
+        // 轻则没反应，重则跳到别的页面。其余动作（含未知值）维持旧行为，交给工作流。
+        val selfAction = rule.action
+        if (selfAction == "back" || selfAction == "clickcenter" || selfAction == "longclick") {
+            val ok = performSelfAction(node, selfAction)
+            DebugLogger.d(
+                TAG,
+                "规则 '${rule.name}' 自带动作 $selfAction，已由触发器直接执行(ok=$ok)，跳过工作流"
+            )
+            return
+        }
 
         // 创建 VScreenElement
         val element = VScreenElement.fromAccessibilityNode(node, calculateDepth(node))

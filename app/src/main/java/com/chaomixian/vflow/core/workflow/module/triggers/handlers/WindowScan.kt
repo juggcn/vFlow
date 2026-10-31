@@ -1,6 +1,7 @@
 package com.chaomixian.vflow.core.workflow.module.triggers.handlers
 
 import android.accessibilityservice.AccessibilityService
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import com.chaomixian.vflow.core.logging.DebugLogger
 
@@ -37,8 +38,33 @@ private var lastScanSignature: String? = null
  * 2. 不做任何「谁是主窗口」的判断。窗口面积、层级、id 在不同 ROM 上表现不一致，
  *    曾据此实现的「仅浮层」在部分机型上会把真广告全部过滤掉，因此彻底移除；
  * 3. rootInActiveWindow 始终并入——浮层有焦点时它常是唯一能拿到浮层的地方。
+ *
+ * 带 100ms 快照：一次无障碍事件里元素触发器和 GKD 触发器会各调一次，
+ * 窗口列表在这几十毫秒内不会变，重复枚举纯属浪费。快照为空时不缓存，避免把「扫不到」固定住。
  */
 internal fun collectWindowRoots(service: AccessibilityService): List<AccessibilityNodeInfo> {
+    val now = SystemClock.uptimeMillis()
+    windowSnapshot?.let { snap ->
+        if (now - snap.at <= WINDOW_SNAPSHOT_TTL_MS) return snap.roots
+    }
+
+    val roots = scanWindowRoots(service)
+    if (roots.isNotEmpty()) {
+        windowSnapshot = WindowSnapshot(now, roots)
+    }
+    return roots
+}
+
+/** 窗口快照 */
+private class WindowSnapshot(val at: Long, val roots: List<AccessibilityNodeInfo>)
+
+/** 快照有效期（毫秒） */
+private const val WINDOW_SNAPSHOT_TTL_MS = 100L
+
+@Volatile
+private var windowSnapshot: WindowSnapshot? = null
+
+private fun scanWindowRoots(service: AccessibilityService): List<AccessibilityNodeInfo> {
     val result = mutableListOf<AccessibilityNodeInfo>()
 
     val windows = runCatching { service.windows }.getOrNull()

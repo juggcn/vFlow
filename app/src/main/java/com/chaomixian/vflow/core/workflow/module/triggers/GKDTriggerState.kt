@@ -242,7 +242,14 @@ data class ResolvedGKDRule(
     val actionMaximumKey: Int?,
     val forcedTime: Long?,
     val priorityTime: Long?,
-    val priorityActionMaximum: Int?
+    val priorityActionMaximum: Int?,
+    /**
+     * 规则自带的动作，已统一转小写：
+     * null / clicknode = 默认，把命中节点交给工作流点击；
+     * back / clickcenter / longclick = 触发器自己执行，不再触发工作流。
+     * 其余未知动作按默认处理，保持旧行为。
+     */
+    val action: String? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
