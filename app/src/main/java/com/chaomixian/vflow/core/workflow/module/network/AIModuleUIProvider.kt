@@ -18,6 +18,8 @@ import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.ui.chat.ChatPresetConfig
+import com.chaomixian.vflow.ui.chat.ChatPresetRepository
 import com.chaomixian.vflow.ui.workflow_editor.RichTextView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
@@ -27,10 +29,8 @@ import java.util.Locale
 
 class AIModuleUIProvider : ModuleUIProvider {
     class ViewHolder(view: View) : CustomEditorViewHolder(view) {
-        val providerGroup: ChipGroup = view.findViewById(R.id.cg_provider)
-        val chipOpenAI: Chip = view.findViewById(R.id.chip_openai)
-        val chipDeepSeek: Chip = view.findViewById(R.id.chip_deepseek)
-        val chipCustom: Chip = view.findViewById(R.id.chip_custom)
+        val presetGroup: ChipGroup = view.findViewById(R.id.cg_preset)
+        val presetHint: TextView = view.findViewById(R.id.tv_preset_hint)
 
         val apiKeyEdit: TextInputEditText = view.findViewById(R.id.et_api_key)
         val modelEdit: TextInputEditText = view.findViewById(R.id.et_model)
@@ -45,13 +45,19 @@ class AIModuleUIProvider : ModuleUIProvider {
         val tempSlider: Slider = view.findViewById(R.id.slider_temperature)
         val tempText: TextView = view.findViewById(R.id.tv_temperature_value)
 
+        /** 当前选中的模型预设 id，空表示自定义 */
+        var presetId: String = AIModule.PRESET_CUSTOM
+
+        /** 当前选中预设的显示名，写进参数供摘要使用 */
+        var presetName: String = ""
+
         // 引用动态创建的 RichTextView
         var promptRichText: RichTextView? = null
         var allSteps: List<ActionStep>? = null
     }
 
     override fun getHandledInputIds(): Set<String> = setOf(
-        "provider", "api_key", "base_url", "model", "prompt", "system_prompt", "temperature", "show_advanced"
+        "preset_id", "preset_name", "api_key", "base_url", "model", "prompt", "system_prompt", "temperature", "show_advanced"
     )
 
     override fun createEditor(
@@ -68,13 +74,11 @@ class AIModuleUIProvider : ModuleUIProvider {
         holder.allSteps = allSteps
 
         // 恢复参数
-        val provider = AIModule.PROVIDER_INPUT_DEFINITION.normalizeEnumValueOrNull(currentParameters["provider"] as? String)
-            ?: AIModule.PROVIDER_OPENAI
-        when (provider) {
-            AIModule.PROVIDER_OPENAI -> holder.chipOpenAI.isChecked = true
-            AIModule.PROVIDER_DEEPSEEK -> holder.chipDeepSeek.isChecked = true
-            else -> holder.chipCustom.isChecked = true
-        }
+        val selectedPresetId = currentParameters["preset_id"] as? String ?: AIModule.PRESET_CUSTOM
+        holder.presetId = selectedPresetId
+        holder.presetName = currentParameters["preset_name"] as? String ?: ""
+        val presets = loadPresets(context)
+        buildPresetChips(context, holder, presets, selectedPresetId)
 
         holder.apiKeyEdit.setText(currentParameters["api_key"] as? String ?: "")
         holder.modelEdit.setText(currentParameters["model"] as? String ?: "gpt-3.5-turbo")
@@ -94,21 +98,21 @@ class AIModuleUIProvider : ModuleUIProvider {
         setupPromptEditor(context, holder, promptValue, onMagicVariableRequested)
 
         // 监听器逻辑
-        holder.providerGroup.setOnCheckedStateChangeListener { _, checkedIds ->
+        holder.presetGroup.setOnCheckedStateChangeListener { group, checkedIds ->
             if (checkedIds.isEmpty()) return@setOnCheckedStateChangeListener
-            val checkedId = checkedIds[0]
+            val chip = group.findViewById<Chip>(checkedIds[0]) ?: return@setOnCheckedStateChangeListener
+            val preset = chip.tag as? ChatPresetConfig
 
-            // 预设填充逻辑
-            when (checkedId) {
-                R.id.chip_openai -> {
-                    holder.baseUrlEdit.setText("https://api.openai.com/v1")
-                    holder.modelEdit.setText("gpt-3.5-turbo")
-                }
-                R.id.chip_deepseek -> {
-                    holder.baseUrlEdit.setText("https://api.deepseek.com")
-                    holder.modelEdit.setText("deepseek-chat")
-                }
-                // 自定义模式保持当前值不变
+            // 先更新选中状态，再刷新输入框：setText 会触发 onParametersChanged，
+            // 那会儿读到的必须是新选中的预设，否则会把旧 id 写回参数。
+            holder.presetId = preset?.id ?: AIModule.PRESET_CUSTOM
+            holder.presetName = preset?.let { it.name.ifBlank { it.model } } ?: ""
+
+            // 选中预设时，把连接信息带出来；自定义模式保持当前值不变
+            if (preset != null) {
+                holder.baseUrlEdit.setText(preset.baseUrl)
+                holder.apiKeyEdit.setText(preset.apiKey)
+                holder.modelEdit.setText(preset.model)
             }
             onParametersChanged()
         }
@@ -133,6 +137,48 @@ class AIModuleUIProvider : ModuleUIProvider {
         holder.systemPromptEdit.doAfterTextChanged(textWatcher)
 
         return holder
+    }
+
+    /** 读取「AI 对话」里已保存的模型列表 */
+    private fun loadPresets(context: Context): List<ChatPresetConfig> {
+        return runCatching {
+            ChatPresetRepository(context).getPresets()
+        }.getOrDefault(emptyList())
+    }
+
+    /** 按已配置模型动态生成选项，末尾固定一个「自定义」 */
+    private fun buildPresetChips(
+        context: Context,
+        holder: ViewHolder,
+        presets: List<ChatPresetConfig>,
+        selectedPresetId: String
+    ) {
+        holder.presetGroup.removeAllViews()
+
+        presets.forEach { preset ->
+            val chip = Chip(context).apply {
+                id = View.generateViewId()
+                text = preset.name.ifBlank { preset.model }
+                isCheckable = true
+                isCheckedIconVisible = true
+                isChecked = preset.id == selectedPresetId
+                tag = preset
+            }
+            holder.presetGroup.addView(chip)
+        }
+
+        val customChip = Chip(context).apply {
+            id = View.generateViewId()
+            text = context.getString(R.string.option_vflow_ai_completion_provider_custom)
+            isCheckable = true
+            isCheckedIconVisible = true
+            isChecked = presets.none { it.id == selectedPresetId }
+            tag = null
+        }
+        holder.presetGroup.addView(customChip)
+
+        // 没配过模型时给个去处提示，不然只剩「自定义」会让人以为是 bug
+        holder.presetHint.isVisible = presets.isEmpty()
     }
 
     private fun setupPromptEditor(
@@ -166,14 +212,9 @@ class AIModuleUIProvider : ModuleUIProvider {
     override fun readFromEditor(holder: CustomEditorViewHolder): Map<String, Any?> {
         val h = holder as ViewHolder
 
-        val provider = when {
-            h.chipDeepSeek.isChecked -> AIModule.PROVIDER_DEEPSEEK
-            h.chipCustom.isChecked -> AIModule.PROVIDER_CUSTOM
-            else -> AIModule.PROVIDER_OPENAI
-        }
-
         return mapOf(
-            "provider" to provider,
+            "preset_id" to h.presetId,
+            "preset_name" to h.presetName,
             "api_key" to h.apiKeyEdit.text.toString(),
             "base_url" to h.baseUrlEdit.text.toString(),
             "model" to h.modelEdit.text.toString(),

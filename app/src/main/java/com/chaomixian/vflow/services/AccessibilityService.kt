@@ -71,7 +71,21 @@ open class AccessibilityService : AccessibilityService() {
             )
         }
 
-        if (packageName == null || className == null) return
+        // TYPE_WINDOWS_CHANGED: 窗口列表变化。浮层广告（WindowManager 添加的悬浮窗、PopupWindow）
+        // 不是 Activity，系统只发这个事件、不发 TYPE_WINDOW_STATE_CHANGED；
+        // 不处理它，浮层广告弹出时触发器根本不会被唤醒，只有底层页面的文字变化在触发检查。
+        // 这类事件的包名/类名都可能为空，所以放在判空之前处理，
+        // 且复用「内容变化」通道：只唤醒检查，不污染 lastWindowClassName 等页面状态。
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            val pkg = (packageName ?: "").ifBlank { ServiceStateBus.lastWindowPackageName ?: "" }
+            serviceScope.launch {
+                ServiceStateBus.postWindowContentChanged(pkg, className ?: "")
+            }
+        }
+
+        if (packageName == null) return
+
+        if (className == null) return
 
         // TYPE_WINDOW_STATE_CHANGED: 窗口状态变化（Activity切换、Dialog显示等）
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
@@ -193,6 +207,7 @@ open class AccessibilityService : AccessibilityService() {
         return when (eventType) {
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> "TYPE_WINDOW_STATE_CHANGED"
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> "TYPE_WINDOW_CONTENT_CHANGED"
+            AccessibilityEvent.TYPE_WINDOWS_CHANGED -> "TYPE_WINDOWS_CHANGED"
             AccessibilityEvent.TYPE_VIEW_CLICKED -> "TYPE_VIEW_CLICKED"
             AccessibilityEvent.TYPE_VIEW_FOCUSED -> "TYPE_VIEW_FOCUSED"
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> "TYPE_VIEW_TEXT_CHANGED"

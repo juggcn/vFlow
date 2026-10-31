@@ -158,6 +158,19 @@ data class RuleExecutionState(
     }
 
     /**
+     * 仅检查冷却与最大触发次数。
+     * matchDelay（持续出现时长）/ matchTime（有效窗口）的判断由 handler
+     * 按"节点是否持续存在"的语义处理，不在这里用时间戳硬判。
+     */
+    fun canTrigger(): Boolean {
+        val t = System.currentTimeMillis()
+        val maximumVal = actionMaximum
+        if (maximumVal != null && actionCount >= maximumVal) return false
+        if (t - actionTriggerTime < actionCd) return false
+        return true
+    }
+
+    /**
      * 检查是否在强制等待期间
      */
     fun isInForcedTime(): Boolean {

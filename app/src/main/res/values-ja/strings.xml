@@ -28,6 +28,16 @@
     <string name="chat_auto_approve_scope_low_risk">低リスク</string>
     <string name="chat_auto_approve_scope_standard">日常業務</string>
     <string name="chat_auto_approve_scope_all">すべて</string>
+    <string name="chat_auto_approve_scope_off_desc">操作のたびに確認します</string>
+    <string name="chat_auto_approve_scope_read_only_desc">閲覧・読み取り操作のみ自動承認</string>
+    <string name="chat_auto_approve_scope_low_risk_desc">スイッチ類など低リスク操作を自動承認</string>
+    <string name="chat_auto_approve_scope_standard_desc">タップや入力を含む通常操作を自動承認</string>
+    <string name="chat_auto_approve_scope_all_desc">高リスク操作を含むすべてを自動承認</string>
+    <string name="chat_auto_approve_all_warning_title">すべての操作を許可しますか？</string>
+    <string name="chat_auto_approve_all_warning_message">以後、モデルは確認なしで任意のツールを実行できます。データやシステム設定を変更する高リスク操作も含まれます。現在のタスクを信頼できる場合のみ有効にしてください。</string>
+    <string name="chat_auto_approve_all_warning_confirm">理解しました、有効にする</string>
+    <string name="chat_retry_action">再試行</string>
+    <string name="chat_regenerate_action">再生成</string>
     <string name="chat_benchmark_title">ベンチマークモード</string>
     <string name="chat_benchmark_description">組み込みのエンドツーエンドのシナリオを実行し、安定したスコアを出力します</string>
     <string name="chat_benchmark_action">開く</string>
@@ -836,7 +846,7 @@
     <string name="label_extended_params">拡張パラメータ</string>
     <string name="label_prompt">即効性のある言葉</string>
     <string name="label_randomness">ランダム性</string>
-    <string name="label_advanced_settings_url">詳細設定（URL/システム）</string>
+    <string name="label_advanced_settings_url">詳細設定（システム／温度）</string>
     <string name="text_scan_recent_20">最新の 20 項目をスキャンします</string>
     <string name="text_region_example">エリア: 100、200、500、600</string>
     <string name="hint_coordinate_input">座標 x、y を入力してください</string>
@@ -1144,6 +1154,10 @@
     <string name="permission_desc_usage_stats">vFlow がアプリケーションの使用状況統計 (使用期間や最終使用時間など) を読み取れるようにして、エージェントの動作の精度を向上させます。</string>
     <string name="permission_name_read_phone_state">電話のステータス</string>
     <string name="permission_desc_read_phone_state">電話トリガー機能を実装するために電話ステータスの変化を監視するために使用されます。</string>
+    <string name="permission_name_contacts">連絡先</string>
+    <string name="permission_desc_contacts">連絡先の自動化を実現するために、システムの連絡先を照会および追加するために使用されます。</string>
+    <string name="permission_name_sms_send">SMS送信</string>
+    <string name="permission_desc_sms_send">この端末からSMSメッセージを送信するために使用されます。</string>
     <string name="permission_name_call_phone">電話をかける</string>
     <string name="permission_desc_call_phone">アプリが電話番号に直接ダイヤルできるようにします。</string>
     <string name="permission_guardian_title">許可ガード</string>

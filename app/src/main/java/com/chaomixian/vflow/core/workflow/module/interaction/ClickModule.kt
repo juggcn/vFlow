@@ -324,43 +324,48 @@ class ClickModule : BaseModule() {
     }
 
     /**
-     * 根据精确的屏幕边界 (Rect) 查找 AccessibilityNodeInfo。
-     * 通过层级遍历查找与目标边界完全匹配的节点。
-     * 注意：此函数返回的节点（如果找到）需要调用者负责回收。
-     * 在查找过程中产生的其他节点会被此函数回收。
+     * 根据精确的屏幕边界 (Rect) 查找**可点击**的 AccessibilityNodeInfo。
+     *
+     * 两个关键约束：
+     * 1. 只返回 isClickable 的节点。浮层广告与底层页面常有 bounds 完全相同的全屏容器，
+     *    旧实现按 BFS 撞到第一个 bounds 匹配就返回，会拿到不可点击或错误窗口的容器，
+     *    performAction(ACTION_CLICK) 要么失败、要么点了个没反应的地方，真正的跳过按钮反而没被点。
+     * 2. 跳过按钮往往是 TextView / ImageView（本身不可点击），真正响应点击的是外层容器，
+     *    因此按 bounds 定位后还需要沿父链上溯，取第一个可点击的祖先。
+     *
+     * 找不到可点击节点就返回 null，调用方会退化为按坐标做手势点击——坐标对浮层同样有效。
      * @param service 无障碍服务实例。
      * @param targetBounds 目标节点的精确屏幕边界。
-     * @return 找到的匹配节点，未找到则返回 null。
+     * @return 找到的可点击节点，未找到则返回 null。
      */
     private fun findNodeByBounds(service: VFlowAccessibilityService, targetBounds: Rect): AccessibilityNodeInfo? {
         val root = service.rootInActiveWindow ?: return null // 获取根节点
-        val queue = ArrayDeque<AccessibilityNodeInfo>() // 用于广度优先搜索的队列
-        queue.add(AccessibilityNodeInfo.obtain(root)) // 从根节点开始搜索，需要复制一份节点以进行处理和回收
-        var foundNode: AccessibilityNodeInfo? = null
+        val queue = ArrayDeque<Pair<AccessibilityNodeInfo, Int>>() // 节点 + 深度
+        queue.add(root to 0)
+        var best: Pair<AccessibilityNodeInfo, Int>? = null
 
         while (queue.isNotEmpty()) {
-            val currentNode = queue.removeFirst()
+            val (currentNode, depth) = queue.removeFirst()
             val nodeBounds = Rect()
             currentNode.getBoundsInScreen(nodeBounds) // 获取当前节点的屏幕边界
 
-            if (nodeBounds == targetBounds) { // 如果边界完全匹配
-                foundNode = AccessibilityNodeInfo.obtain(currentNode) // 复制找到的节点以返回
-                // 清理队列中剩余的节点，并回收它们
-                queue.forEach { it.recycle() }
-                queue.clear()
-                currentNode.recycle() // 回收当前处理的节点副本
-                break // 已找到，跳出循环
+            // 同一 bounds 可能命中父子多个节点，取最深的那个（最接近实际控件）
+            val prevBest = best
+            if (nodeBounds == targetBounds && (prevBest == null || depth > prevBest.second)) {
+                best = currentNode to depth
             }
 
-            // 将子节点加入队列继续搜索
             for (i in 0 until currentNode.childCount) {
-                currentNode.getChild(i)?.let { child -> queue.add(child) } // 子节点直接加入，它们会在后续迭代中被复制和回收
+                currentNode.getChild(i)?.let { child -> queue.add(child to depth + 1) }
             }
-            currentNode.recycle() // 回收当前处理的节点副本
         }
-        // 如果 root 是通过 obtain() 获取的副本，则此处也应 root.recycle()。
-        // 但由于 service.rootInActiveWindow 通常返回的是一个共享实例或由系统管理的实例，
-        // 我们不在此回收原始的 root，仅回收通过 obtain(root) 创建的副本。
-        return foundNode // 调用者需要回收此返回的节点
+
+        // 沿父链上溯，取第一个可点击节点
+        var cursor: AccessibilityNodeInfo? = best?.first
+        while (cursor != null) {
+            if (cursor.isClickable) return cursor
+            cursor = cursor.parent
+        }
+        return null
     }
 }

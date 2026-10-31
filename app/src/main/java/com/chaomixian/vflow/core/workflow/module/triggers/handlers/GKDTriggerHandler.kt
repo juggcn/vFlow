@@ -12,7 +12,10 @@ import com.chaomixian.vflow.services.ServiceStateBus
 import com.google.gson.GsonBuilder
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.sample
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
@@ -60,6 +63,13 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
     // 监听Job
     private var listeningJob: Job? = null
 
+    // 事件后补查Job（等广告控件延迟渲染）
+    private var recheckJob: Job? = null
+
+    // 串行化匹配检查：事件流与补查可能并发执行，避免状态竞争
+    private val checkMutex = Mutex()
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
     override fun startListening(context: Context) {
         DebugLogger.d(TAG, "开始监听 GKD 订阅规则")
 
@@ -70,13 +80,35 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                 ServiceStateBus.windowChangeEventFlow.collect { (packageName, className) ->
                     DebugLogger.d(TAG, "收到窗口变化事件: $packageName / $className")
                     checkAndTriggerWorkflows(context, packageName, className)
+                    scheduleRecheck(context, packageName, className)
                 }
             }
             launch {
-                ServiceStateBus.windowContentChangedFlow.collect { (packageName, className) ->
-                    DebugLogger.d(TAG, "收到窗口内容变化事件: $packageName / $className")
-                    checkAndTriggerWorkflows(context, packageName, className)
-                }
+                // 内容变化事件高频（列表滚动、倒计时文字刷新每秒可达几十次）。
+                // 用 sample 而非 debounce：事件持续不断时 debounce 会被一直重置而永不 emit，
+                // 倒计时类按钮整段漏检；sample 按固定周期取最新值，一定能触发检查。
+                ServiceStateBus.windowContentChangedFlow
+                    .sample(TRIGGER_CONTENT_DEBOUNCE_MS)
+                    .collect { (packageName, className) ->
+                        DebugLogger.d(TAG, "收到窗口内容变化事件: $packageName / $className")
+                        checkAndTriggerWorkflows(context, packageName, className)
+                        scheduleRecheck(context, packageName, className)
+                    }
+            }
+        }
+    }
+
+    /**
+     * 事件后的短周期补查：开屏广告的典型时序是 Activity 先出现、广告控件
+     * 50~300ms 后才渲染完成，事件瞬间查一遍树大概率还没画出来。未命中时
+     * 每隔一小段时间重查，命中即停（新事件会取消上一轮补查）。
+     */
+    private fun scheduleRecheck(context: Context, packageName: String, className: String) {
+        recheckJob?.cancel()
+        recheckJob = triggerScope.launch {
+            repeat(TRIGGER_RECHECK_TIMES) {
+                delay(TRIGGER_RECHECK_INTERVAL_MS)
+                checkAndTriggerWorkflows(context, packageName, className)
             }
         }
     }
@@ -85,6 +117,8 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         DebugLogger.d(TAG, "停止监听 GKD 订阅规则")
         listeningJob?.cancel()
         listeningJob = null
+        recheckJob?.cancel()
+        recheckJob = null
         triggerStates.clear()
     }
 
@@ -117,11 +151,18 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
         val rules = mutableListOf<ResolvedGKDRule>()
 
+        // 是否连订阅里被「默认关闭」的规则组一起解析。
+        // 社区订阅（如「梦念逍遥のGKD订阅」）默认只开「开屏广告」，全屏广告 / 局部广告 / 更新提示
+        // 等组的 enable 都是 false，要靠用户在 GKD 客户端里逐组打开；vFlow 没有这套组开关界面，
+        // 严格遵循它就等于绝大多数广告规则拿不到。因此默认全部解析。
+        val includeDisabled = (config["enableMode"] as? String) != "enabled"
+        DebugLogger.d(TAG, "enableMode=${if (includeDisabled) "all" else "enabled"}")
+
         // 1. 从订阅 URL 下载
         val subscriptionUrl = config["subscriptionUrl"] as? String
         if (!subscriptionUrl.isNullOrBlank()) {
             DebugLogger.d(TAG, "工作流 '${trigger.workflowName}' 从订阅 URL 加载: $subscriptionUrl")
-            val parsedRules = downloadAndParseSubscription(subscriptionUrl, getRulesDir())
+            val parsedRules = downloadAndParseSubscription(subscriptionUrl, getRulesDir(), includeDisabled)
             DebugLogger.d(TAG, "工作流 '${trigger.workflowName}' 解析到 ${parsedRules.size} 条规则")
             rules.addAll(parsedRules)
         }
@@ -129,7 +170,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         // 2. 从文件加载
         val subscriptionFile = config["subscriptionFile"] as? String
         if (!subscriptionFile.isNullOrBlank()) {
-            val fileRules = loadRulesFromFile(subscriptionFile)
+            val fileRules = loadRulesFromFile(subscriptionFile, includeDisabled)
             rules.addAll(fileRules)
         }
 
@@ -145,7 +186,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
      * 下载并解析远程订阅
      * 使用缓存避免重复下载
      */
-    private fun downloadAndParseSubscription(url: String, rulesDir: File): List<ResolvedGKDRule> {
+    private fun downloadAndParseSubscription(url: String, rulesDir: File, includeDisabled: Boolean): List<ResolvedGKDRule> {
         // 生成缓存文件名（使用 URL 的 hash 作为文件名）
         val fileName = "subscription_${url.hashCode()}.json"
         val file = File(rulesDir, fileName)
@@ -158,25 +199,25 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
             return try {
                 val content = file.readText()
                 if (content.isNotEmpty()) {
-                    parseSubscriptionContent(content)
+                    parseSubscriptionContent(content, includeDisabled)
                 } else {
                     emptyList()
                 }
             } catch (e: Exception) {
                 DebugLogger.e(TAG, "读取缓存失败，尝试重新下载", e)
-                downloadSubscription(url, file)
+                downloadSubscription(url, file, includeDisabled)
             }
         }
 
         // 缓存不存在或已过期，下载订阅
-        return downloadSubscription(url, file)
+        return downloadSubscription(url, file, includeDisabled)
     }
 
     /**
      * 实际执行下载操作
      * 在后台线程执行网络请求
      */
-    private fun downloadSubscription(url: String, file: File): List<ResolvedGKDRule> {
+    private fun downloadSubscription(url: String, file: File, includeDisabled: Boolean): List<ResolvedGKDRule> {
         DebugLogger.d(TAG, "开始下载订阅: $url")
 
         return runBlocking(Dispatchers.IO) {
@@ -211,7 +252,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                 DebugLogger.d(TAG, "已保存订阅到: ${file.absolutePath}")
 
                 // 解析
-                parseSubscriptionContent(content)
+                parseSubscriptionContent(content, includeDisabled)
             } catch (e: Exception) {
                 DebugLogger.e(TAG, "下载订阅失败: ${e.message}", e)
                 // 如果下载失败且有缓存文件，尝试使用缓存
@@ -220,7 +261,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                     return@runBlocking try {
                         val content = file.readText()
                         if (content.isNotEmpty()) {
-                            parseSubscriptionContent(content)
+                            parseSubscriptionContent(content, includeDisabled)
                         } else {
                             emptyList()
                         }
@@ -237,7 +278,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
     /**
      * 解析订阅内容
      */
-    private fun parseSubscriptionContent(content: String): List<ResolvedGKDRule> {
+    private fun parseSubscriptionContent(content: String, includeDisabled: Boolean): List<ResolvedGKDRule> {
         // 验证输入
         val trimmed = content.trim()
         if (trimmed.isEmpty() || trimmed.length < 10) {
@@ -248,7 +289,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         return try {
             // 使用 Json5 解析（支持单引号、注释等）
             val jsonElement = Json5.parseToJson5Element(trimmed)
-            parseJsonElement(jsonElement)
+            parseJsonElement(jsonElement, includeDisabled)
         } catch (e: Exception) {
             DebugLogger.e(TAG, "解析订阅内容失败: ${trimmed.take(100)}", e)
             emptyList()
@@ -258,7 +299,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
     /**
      * 解析 JSON 元素
      */
-    private fun parseJsonElement(jsonElement: JsonElement): List<ResolvedGKDRule> {
+    private fun parseJsonElement(jsonElement: JsonElement, includeDisabled: Boolean): List<ResolvedGKDRule> {
         val rules = mutableListOf<ResolvedGKDRule>()
 
         if (jsonElement !is JsonObject) {
@@ -282,7 +323,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
                 // 检查 app 级别的启用状态
                 val appEnable = appObj["enable"]?.jsonPrimitive?.booleanOrNull
-                if (appEnable != null && !appEnable) {
+                if (!includeDisabled && appEnable == false) {
                     DebugLogger.d(TAG, "app[$index] 已禁用，跳过")
                     return@forEachIndexed
                 }
@@ -304,7 +345,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
                         // 检查 group 级别的启用状态
                         val groupEnable = groupObj["enable"]?.jsonPrimitive?.booleanOrNull
-                        if (groupEnable != null && !groupEnable) {
+                        if (!includeDisabled && groupEnable == false) {
                             DebugLogger.d(TAG, "app[$appId].groups[$gIndex] 已禁用，跳过")
                             return@forEachIndexed
                         }
@@ -322,7 +363,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
                                 // 检查 rule 级别的启用状态
                                 val ruleEnable = ruleObj["enable"]?.jsonPrimitive?.booleanOrNull
-                                if (ruleEnable != null && !ruleEnable) {
+                                if (!includeDisabled && ruleEnable == false) {
                                     DebugLogger.d(TAG, "app[$appId].$groupName.rules[$rIndex] 已禁用，跳过")
                                     return@forEachIndexed
                                 }
@@ -353,7 +394,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
                 // 检查 globalGroup 级别的启用状态
                 val groupEnable = groupObj["enable"]?.jsonPrimitive?.booleanOrNull
-                if (groupEnable != null && !groupEnable) {
+                if (!includeDisabled && groupEnable == false) {
                     DebugLogger.d(TAG, "globalGroups[$index] 已禁用，跳过")
                     return@forEachIndexed
                 }
@@ -371,7 +412,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
                         // 检查 rule 级别的启用状态
                         val ruleEnable = ruleObj["enable"]?.jsonPrimitive?.booleanOrNull
-                        if (ruleEnable != null && !ruleEnable) {
+                        if (!includeDisabled && ruleEnable == false) {
                             DebugLogger.d(TAG, "globalGroups.$groupName.rules[$rIndex] 已禁用，跳过")
                             return@forEachIndexed
                         }
@@ -504,7 +545,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
     /**
      * 从文件加载规则
      */
-    private fun loadRulesFromFile(filePath: String): List<ResolvedGKDRule> {
+    private fun loadRulesFromFile(filePath: String, includeDisabled: Boolean): List<ResolvedGKDRule> {
         val file = if (filePath.startsWith("/")) {
             File(filePath)
         } else {
@@ -518,7 +559,7 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
 
         return try {
             file.readText().let { content ->
-                parseSubscriptionContent(content)
+                parseSubscriptionContent(content, includeDisabled)
             }
         } catch (e: Exception) {
             DebugLogger.e(TAG, "读取规则文件失败: ${file.absolutePath}", e)
@@ -538,11 +579,27 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
     /**
      * 检查并触发匹配的工作流
      */
-    private fun checkAndTriggerWorkflows(context: Context, packageName: String, className: String) {
+    private suspend fun checkAndTriggerWorkflows(context: Context, packageName: String, className: String) {
+        // 先同步状态
         syncTriggerStates()
 
         val service = ServiceStateBus.getAccessibilityService() ?: return
-        val rootNode = service.rootInActiveWindow ?: return
+        // 扫描所有窗口（含 Dialog / PopupWindow 等弹窗层），激活窗口排最前。
+        // 只扫 rootInActiveWindow 会漏掉弹窗广告。
+        val windowRoots = collectWindowRoots(service)
+        if (windowRoots.isEmpty()) return
+
+        checkMutex.withLock {
+            checkAndTriggerWorkflowsLocked(context, packageName, className, windowRoots)
+        }
+    }
+
+    private fun checkAndTriggerWorkflowsLocked(
+        context: Context,
+        packageName: String,
+        className: String,
+        windowRoots: List<AccessibilityNodeInfo>
+    ) {
 
         val t = System.currentTimeMillis()
         val currentPackage = packageName
@@ -581,18 +638,15 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                 for (rule in state.rules) {
                     val ruleState = state.getRuleState(rule)
 
-                    // 检查规则状态
-                    if (!ruleState.shouldTrigger()) {
+                    // 冷却与最大触发次数检查
+                    if (!ruleState.canTrigger()) {
                         continue
                     }
 
-                    // 检查前置规则 (preRules) - 必须是最后触发的规则
-                    if (rule.preKeys.isNotEmpty()) {
-                        val lastTrigger = state.lastTriggerRule
-                        if (lastTrigger == null || lastTrigger.key !in rule.preKeys) {
-                            DebugLogger.d(TAG, "规则 '${rule.name}' 的前置规则未触发 (preKeys=${rule.preKeys}, lastTriggerKey=${lastTrigger?.key})")
-                            continue
-                        }
+                    // 检查前置规则 (preKeys)：GKD 官方语义是所有 preKeys 对应的
+                    // 规则都已触发（自上次 reset 以来），而不是只看最后一次触发的规则
+                    if (!rule.checkPreKeys(state.matchedKeys)) {
+                        continue
                     }
 
                     // 检查应用匹配
@@ -605,28 +659,47 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                         continue
                     }
 
-                    // 获取匹配选项
-                    val matchOption = MatchOption(fastQuery = rule.fastQuery ?: false)
-
-                    // 查询匹配的节点 - 先尝试 anyMatches
-                    var matchedNode = queryRuleSelectors(rootNode, rule.anyMatches, matchOption, false)
-                        ?: queryRuleSelectors(rootNode, rule.matches, matchOption, true)
+                    // 逐窗口匹配；指定包名的规则只扫对应包名的窗口，控制多窗口开销
+                    var matchedNode: AccessibilityNodeInfo? = null
+                    for (root in windowRoots) {
+                        if (rule.appId != null) {
+                            val rootPkg = root.packageName?.toString()
+                            if (rootPkg != null && rootPkg != rule.appId) continue
+                        }
+                        val node = matchRuleInRoot(root, rule) ?: continue
+                        matchedNode = node
+                        break
+                    }
 
                     if (matchedNode == null) {
+                        // 节点消失：重置首次匹配时间，下次重新累计 matchDelay
+                        if (ruleState.matchChangedTime != 0L) {
+                            ruleState.matchChangedTime = 0L
+                        }
                         continue
                     }
 
-                    // 检查排除条件
-                    if (queryRuleSelectors(rootNode, rule.excludeMatches, matchOption, false) != null) {
+                    // matchDelay：节点需持续出现该时长才触发（防抖）。
+                    // 首次命中只记录时间，由事件后的补查机制在延迟期满后确认触发
+                    if (ruleState.matchChangedTime == 0L) {
+                        ruleState.matchChangedTime = t
+                        if (ruleState.matchDelay > 0) continue
+                    } else if (t - ruleState.matchChangedTime < ruleState.matchDelay) {
                         continue
                     }
-                    if (rule.excludeAllMatches.isNotEmpty()) {
-                        val allExcluded = rule.excludeAllMatches.all { selector ->
-                            queryRuleSelectors(rootNode, listOf(selector), matchOption, false) == null
-                        }
-                        if (!allExcluded) {
-                            continue
-                        }
+
+                    // matchTime：首次匹配后 matchTime 毫秒内有效，超窗作废
+                    val matchTimeVal = ruleState.matchTime
+                    if (matchTimeVal != null && matchTimeVal > 0 &&
+                        t - ruleState.matchChangedTime > matchTimeVal
+                    ) {
+                        ruleState.matchChangedTime = 0L
+                        continue
+                    }
+
+                    // forcedTime：首次匹配后的强制等待期内不动作
+                    if (ruleState.isInForcedTime()) {
+                        continue
                     }
 
                     // 记录匹配
@@ -639,15 +712,16 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                     }
 
                     // 处理触发延迟
+                    val nodeForTrigger = matchedNode
                     if (ruleState.actionDelay > 0) {
                         ruleState.startActionDelay(t)
                         val job = triggerScope.launch {
                             delay(ruleState.actionDelay)
-                            performTrigger(context, state, rule, ruleState, matchedNode)
+                            performTrigger(context, state, rule, ruleState, nodeForTrigger)
                         }
                         ruleState.actionDelayJob = job
                     } else {
-                        performTrigger(context, state, rule, ruleState, matchedNode)
+                        performTrigger(context, state, rule, ruleState, nodeForTrigger)
                     }
                     break // 触发后退出规则循环
                 }
@@ -655,6 +729,45 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
                 DebugLogger.e(TAG, "处理工作流 '${state.trigger.workflowName}' 时出错", e)
             }
         }
+    }
+
+    /**
+     * 在单个窗口根节点上匹配规则
+     * GKD 官方语义：matches 与 anyMatches 同时评估——
+     * matches 配置了就必须全部命中，anyMatches 配置了就必须任一命中，两者取交集
+     */
+    private fun matchRuleInRoot(
+        root: AccessibilityNodeInfo,
+        rule: ResolvedGKDRule
+    ): AccessibilityNodeInfo? {
+        val matchOption = MatchOption(fastQuery = rule.fastQuery ?: false)
+
+        val matchesNode = if (rule.matches.isEmpty()) null
+        else queryRuleSelectors(root, rule.matches, matchOption, true)
+
+        val anyNode = if (rule.anyMatches.isEmpty()) null
+        else queryRuleSelectors(root, rule.anyMatches, matchOption, false)
+
+        val ok = (rule.matches.isEmpty() || matchesNode != null) &&
+                (rule.anyMatches.isEmpty() || anyNode != null)
+        if (!ok) return null
+
+        // 排除条件在命中所在的同一个窗口内检查
+        if (rule.excludeMatches.isNotEmpty() &&
+            queryRuleSelectors(root, rule.excludeMatches, matchOption, false) != null
+        ) {
+            return null
+        }
+        if (rule.excludeAllMatches.isNotEmpty()) {
+            val allExcluded = rule.excludeAllMatches.all { selector ->
+                queryRuleSelectors(root, listOf(selector), matchOption, false) == null
+            }
+            if (!allExcluded) {
+                return null
+            }
+        }
+
+        return matchesNode ?: anyNode
     }
 
     /**
@@ -751,7 +864,8 @@ class GKDTriggerHandler : ListeningTriggerHandler() {
         ruleState: RuleExecutionState,
         node: AccessibilityNodeInfo
     ) {
-        if (!ruleState.shouldTrigger()) {
+        // 冷却与最大触发次数检查（matchDelay/matchTime 已在入口处按持续出现语义处理）
+        if (!ruleState.canTrigger()) {
             return
         }
 

@@ -121,12 +121,24 @@ android {
         }
     }
 
+    // -Pabi=arm64-v8a 时只打指定 ABI，省掉其余几套 native 编译；不传则维持原来的四 ABI + universal
+    val abiFilter = (findProperty("abi") as String?)
+        ?.split(",")
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        .orEmpty()
+
     splits {
         abi {
             isEnable = true
             reset()
-            include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-            isUniversalApk = true
+            if (abiFilter.isEmpty()) {
+                include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+                isUniversalApk = true
+            } else {
+                include(*abiFilter.toTypedArray())
+                isUniversalApk = false
+            }
         }
     }
 
@@ -223,6 +235,9 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+
+    // 二维码 / 条码 生成与识别（纯 Java，无 native 库）
+    implementation("com.google.zxing:core:3.5.3")
 
     // Web 服务器
     implementation("org.nanohttpd:nanohttpd-webserver:2.3.1")

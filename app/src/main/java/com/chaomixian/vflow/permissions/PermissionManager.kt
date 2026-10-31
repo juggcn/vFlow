@@ -242,11 +242,32 @@ object PermissionManager {
         descriptionStringRes = R.string.permission_desc_read_phone_state
     )
 
+    // 联系人权限（读取 + 写入）
+    val CONTACTS = Permission(
+        id = Manifest.permission.READ_CONTACTS,
+        name = "联系人权限",
+        description = "用于查询和添加系统联系人，以实现联系人自动化操作。",
+        type = PermissionType.RUNTIME,
+        runtimePermissions = listOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS),
+        nameStringRes = R.string.permission_name_contacts,
+        descriptionStringRes = R.string.permission_desc_contacts
+    )
+
+    // 发送短信权限（独立于接收/读取短信的权限组）
+    val SMS_SEND = Permission(
+        id = Manifest.permission.SEND_SMS,
+        name = "发送短信权限",
+        description = "用于以本机身份发送短信。",
+        type = PermissionType.RUNTIME,
+        nameStringRes = R.string.permission_name_sms_send,
+        descriptionStringRes = R.string.permission_desc_sms_send
+    )
+
     // 所有已知特殊权限的列表，用于 UI 展示和快速查找
     val allKnownPermissions = listOf(
         CORE, CORE_ROOT,
         ACCESSIBILITY, NOTIFICATIONS, MICROPHONE, OVERLAY, NOTIFICATION_LISTENER_SERVICE,
-        NOTIFICATION_POLICY, STORAGE, SMS, READ_PHONE_STATE, BLUETOOTH, WRITE_SETTINGS, WRITE_SECURE_SETTINGS, LOCATION, SHIZUKU,
+        NOTIFICATION_POLICY, STORAGE, SMS, SMS_SEND, CONTACTS, READ_PHONE_STATE, BLUETOOTH, WRITE_SETTINGS, WRITE_SECURE_SETTINGS, LOCATION, SHIZUKU,
         IGNORE_BATTERY_OPTIMIZATIONS, EXACT_ALARM, ROOT, USAGE_STATS
     )
 

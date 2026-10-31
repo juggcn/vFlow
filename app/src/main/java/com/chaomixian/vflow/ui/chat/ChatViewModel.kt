@@ -73,6 +73,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var conversationCounter = 1
     private var pendingToolExecution: PendingToolExecution? = null
     private var currentAgentJob: Job? = null
+
+    /** 会话 id -> 本轮已发生的工具往返次数，用于防止模型自循环。 */
+    private val toolRounds = mutableMapOf<String, Int>()
     private var currentAgentConversationId: String? = null
     private var currentBenchmarkJob: Job? = null
     private val queuedUserPrompts = mutableListOf<QueuedUserPrompt>()
@@ -81,6 +84,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         private const val LOG_TAG = "ChatAgentFlow"
         private const val MAX_LOG_SNIPPET = 180
+        /** 流式增量刷新 UI 的最小间隔，避免长回答高频重组。 */
+        private const val STREAM_PROGRESS_INTERVAL_MS = 50L
+        /** 单次任务里允许的最大工具往返轮数，超过就停下并要求用户确认。 */
+        private const val MAX_TOOL_ROUNDS = 12
     }
 
     private val prefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -176,6 +183,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectPreset(presetId: String) {
+        val state = _uiState.value
+        if (state.activeConversationId == null) {
+            // 还没有会话时选模型，记成默认值，下一条新对话直接用它。
+            repository.setDefaultPresetId(presetId)
+            updateUiStateAndPersist { it.copy(defaultPresetId = presetId) }
+            return
+        }
         updateActiveConversation { conversation ->
             conversation.copy(presetId = presetId)
         }
@@ -291,6 +305,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         currentAgentJob = null
         currentAgentConversationId = null
         pendingToolExecution = null
+        toolRounds.clear()
         queuedUserPrompts.clear()
         val now = System.currentTimeMillis()
         updateUiStateAndPersist { state ->
@@ -306,13 +321,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         conversation.messages.forEach { message ->
                             when {
                                 message.isPending -> {
-                                    add(
-                                        ChatMessage(
-                                            role = ChatMessageRole.ERROR,
-                                            content = "已停止。",
-                                            timestampMillis = now,
+                                    // 流式输出到一半被停止时，保留已经生成的内容，不要整段丢掉。
+                                    if (message.content.isBlank() && message.reasoningContent.isNullOrBlank()) {
+                                        add(
+                                            ChatMessage(
+                                                role = ChatMessageRole.ERROR,
+                                                content = "已停止。",
+                                                timestampMillis = now,
+                                            )
                                         )
-                                    )
+                                    } else {
+                                        add(message.copy(isPending = false))
+                                    }
                                 }
 
                                 message.role == ChatMessageRole.ASSISTANT &&
@@ -381,6 +401,39 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         startUserMessage(conversation, content, preset)
+        return true
+    }
+
+    /**
+     * 重新生成上一条回复：截断到最后一条用户消息，丢掉其后的错误/空回复再请求一次。
+     * 出错后点"重试"走的也是这里，不必让用户重新打字。
+     */
+    fun retryLastAssistantReply(): Boolean {
+        val state = _uiState.value
+        if (state.isBenchmarkRunning) {
+            _events.tryEmit("Benchmark 正在运行，暂时无法重试。")
+            return false
+        }
+        if (state.isSending || state.isAgentRunning || pendingToolExecution != null) {
+            _events.tryEmit("当前还有任务在执行，完成后再重试。")
+            return false
+        }
+        val conversation = state.activeConversation ?: return false
+        val preset = resolvePreset(conversation, state)
+        if (preset == null) {
+            _events.tryEmit("请先在设置 -> 模型配置里配置聊天模型。")
+            return false
+        }
+        val messages = conversation.messages
+        val lastUserIndex = messages.indexOfLast { it.role == ChatMessageRole.USER }
+        if (lastUserIndex < 0) return false
+        val truncated = messages.subList(0, lastUserIndex + 1).toList()
+        DebugLogger.i(LOG_TAG, "Retry requested conversation=${conversation.id} fromMessage=$lastUserIndex")
+        requestAssistantReply(
+            conversation = conversation.copy(messages = truncated),
+            historyForRequest = truncated,
+            preset = preset,
+        )
         return true
     }
 
@@ -806,6 +859,33 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         val historyForRequest = updatedAssistantMessages + resultMessages
+        val round = (toolRounds[conversationId] ?: 0) + 1
+        toolRounds[conversationId] = round
+        if (round > MAX_TOOL_ROUNDS) {
+            // 模型陷入"调工具 → 失败 → 再调"的循环时兜底，避免持续消耗额度和电量。
+            DebugLogger.w(
+                LOG_TAG,
+                "Tool round limit reached conversation=$conversationId rounds=$round"
+            )
+            toolRounds.remove(conversationId)
+            val stopMessage = ChatMessage(
+                role = ChatMessageRole.ERROR,
+                content = "已连续执行 $MAX_TOOL_ROUNDS 轮操作仍未完成，为避免空转已自动停止。\n\n" +
+                    "可以把任务拆小一点再试，或者检查是否卡在同一个界面上。",
+                timestampMillis = System.currentTimeMillis(),
+            )
+            replaceConversation(
+                conversation = conversation.copy(
+                    messages = historyForRequest + stopMessage,
+                    updatedAtMillis = stopMessage.timestampMillis,
+                ),
+                isSending = false,
+                pendingPermissionRequest = null,
+                isAgentRunning = false,
+            )
+            processNextQueuedPromptIfIdle()
+            return
+        }
         val updatedConversation = conversation.copy(
             messages = historyForRequest,
             updatedAtMillis = historyForRequest.lastOrNull()?.timestampMillis ?: System.currentTimeMillis(),
@@ -822,6 +902,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         historyForRequest: List<ChatMessage>,
         preset: ChatPresetConfig,
     ) {
+        // 用户发起新一轮对话时重置工具轮次计数，工具自循环才有上限。
+        if (historyForRequest.lastOrNull()?.role == ChatMessageRole.USER) {
+            toolRounds.remove(conversation.id)
+        }
         DebugLogger.i(
             LOG_TAG,
             "Requesting assistant reply conversation=${conversation.id} messages=${historyForRequest.size} preset=${preset.name.ifBlank { preset.model }}"
@@ -856,11 +940,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     LOG_TAG,
                     "Skill selection conversation=${updatedConversation.id} skills=${skillSelection.skills.joinToString { it.id }} tools=${skillSelection.availableTools.joinToString { it.name }}"
                 )
+                var lastProgressAt = 0L
                 val result = chatClient.generateReply(
                     preset = preset,
                     history = historyForRequest,
                     skillSelection = skillSelection,
-                )
+                ) { progress ->
+                    // 每来一片就整树 push 一次状态会让长回答明显掉帧，这里限流到 ~20fps；
+                    // 最终文本仍以 result 为准，所以节流不会丢内容。
+                    val nowMillis = System.currentTimeMillis()
+                    if (nowMillis - lastProgressAt >= STREAM_PROGRESS_INTERVAL_MS) {
+                        lastProgressAt = nowMillis
+                        updatePendingMessageProgress(
+                            conversationId = updatedConversation.id,
+                            messageId = pendingMessage.id,
+                            content = progress.content,
+                            reasoningContent = progress.reasoningContent,
+                        )
+                    }
+                }
                 DebugLogger.i(
                     LOG_TAG,
                     "Model reply conversation=${updatedConversation.id} tokens=${result.totalTokens ?: -1} reasoningChars=${result.reasoningContent?.length ?: 0} toolCalls=${result.toolCalls.summarizeToolCalls()} content=${result.content.compactForLog()}"
@@ -919,12 +1017,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     throwable
                 )
                 pendingToolExecution = null
+                val friendlyError = ChatErrorMapper.describe(throwable, preset.providerEnum.displayName)
                 replacePendingMessage(
                     conversationId = updatedConversation.id,
                     pendingMessageId = pendingMessage.id,
                     replacement = ChatMessage(
                         role = ChatMessageRole.ERROR,
-                        content = throwable.message?.trim().orEmpty().ifBlank { "请求失败，请检查当前模型配置。" },
+                        content = friendlyError.toMessageContent(),
                         timestampMillis = System.currentTimeMillis(),
                     )
                 )
@@ -1067,6 +1166,37 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 isAgentRunning = agentStillRunning,
                 pendingPermissionRequest = null,
             )
+        }
+    }
+
+    /**
+     * 流式刷新专用：只更新内容，不落盘、不动时间戳、不重排会话列表。
+     * 走 [updateUiStateAndPersist] 的话每片增量都要序列化整个会话历史，代价太高。
+     */
+    private fun updatePendingMessageProgress(
+        conversationId: String,
+        messageId: String,
+        content: String,
+        reasoningContent: String,
+    ) {
+        _uiState.update { state ->
+            var changed = false
+            val conversations = state.conversations.map { conversation ->
+                if (conversation.id != conversationId) return@map conversation
+                val messages = conversation.messages.map { message ->
+                    if (message.id != messageId) {
+                        message
+                    } else {
+                        changed = true
+                        message.copy(
+                            content = content,
+                            reasoningContent = reasoningContent.ifBlank { message.reasoningContent },
+                        )
+                    }
+                }
+                conversation.copy(messages = messages)
+            }
+            if (changed) state.copy(conversations = conversations) else state
         }
     }
 

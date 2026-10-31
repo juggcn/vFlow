@@ -19,6 +19,11 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -71,6 +76,7 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DividerDefaults
@@ -124,6 +130,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -132,6 +139,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.permissions.PermissionActivity
+import com.chaomixian.vflow.ui.settings.ModelConfigActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
@@ -140,6 +148,9 @@ import kotlinx.serialization.json.Json
 
 private const val MAX_RECENT_PHOTOS = 18
 private const val MAX_PICKED_PHOTOS = 10
+
+/** 工具参数折叠时显示的行数。 */
+private const val COLLAPSED_ARGUMENT_LINES = 5
 
 private val prettyToolArgumentsJson = Json {
     prettyPrint = true
@@ -293,7 +304,14 @@ fun ChatScreen(
     LaunchedEffect(activeConversation?.messages?.size) {
         val lastIndex = activeConversation?.messages?.lastIndex ?: -1
         if (lastIndex >= 0) {
-            listState.animateScrollToItem(lastIndex + 1)
+            // 用户正在往上翻旧消息时不要把他拽回底部，只有本来就在底部附近才跟随。
+            val wasNearBottom = listState.layoutInfo.visibleItemsInfo
+                .lastOrNull()?.index
+                ?.let { it >= lastIndex - 2 }
+                ?: true
+            if (wasNearBottom) {
+                listState.animateScrollToItem(lastIndex + 1)
+            }
         }
     }
 
@@ -388,6 +406,8 @@ fun ChatScreen(
                         },
                         canSaveWorkflow = chatViewModel.canSaveTemporaryWorkflow(message.id),
                         onSaveWorkflow = { chatViewModel.saveTemporaryWorkflow(message.id) },
+                        onRetry = { chatViewModel.retryLastAssistantReply() },
+                        retryEnabled = !chatUiState.isSending && !chatUiState.isAgentRunning,
                     )
                 }
             }
@@ -409,7 +429,12 @@ fun ChatScreen(
             ChatWelcomeState(
                 suggestions = welcomeSuggestions,
                 onSuggestionClick = { suggestion ->
-                    prompt = context.getString(suggestion.promptRes)
+                    // 建议项本来就是"帮我起个头"，点了直接发出去，少一次多余的确认动作。
+                    val suggestionPrompt = context.getString(suggestion.promptRes)
+                    prompt = suggestionPrompt
+                    if (chatViewModel.sendMessage(suggestionPrompt)) {
+                        prompt = ""
+                    }
                 }
             )
         }
@@ -969,6 +994,8 @@ private fun ChatMessageBubble(
     onCopyMessage: () -> Unit,
     canSaveWorkflow: Boolean = false,
     onSaveWorkflow: () -> Unit = {},
+    onRetry: (() -> Unit)? = null,
+    retryEnabled: Boolean = true,
 ) {
     when (message.role) {
         ChatMessageRole.USER -> UserMessageBubble(
@@ -1001,6 +1028,8 @@ private fun ChatMessageBubble(
             message = message,
             modifier = modifier,
             onCopyMessage = onCopyMessage,
+            onRetry = onRetry,
+            retryEnabled = retryEnabled,
         )
     }
 }
@@ -1057,6 +1086,67 @@ private fun UserMessageBubble(
             }
         }
     }
+}
+
+/** 等待首个 token 时的三点律动，比一行静态"正在思考"更能说明"还活着"。 */
+@Composable
+private fun ChatThinkingIndicator(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "chat-thinking")
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            repeat(3) { index ->
+                val alpha by transition.animateFloat(
+                    initialValue = 0.2f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 640, delayMillis = index * 150),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "chat-thinking-dot-$index",
+                )
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = alpha),
+                            shape = CircleShape,
+                        )
+                )
+            }
+        }
+        Text(
+            text = stringResource(R.string.chat_generating),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** 流式输出时的闪烁光标，标出"还在继续"。 */
+@Composable
+private fun ChatStreamingCaret(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "chat-caret")
+    val alpha by transition.animateFloat(
+        initialValue = 0.1f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 600),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "chat-caret-alpha",
+    )
+    Box(
+        modifier = modifier
+            .size(width = 7.dp, height = 14.dp)
+            .background(
+                color = MaterialTheme.colorScheme.primary.copy(alpha = alpha),
+                shape = RoundedCornerShape(2.dp),
+            )
+    )
 }
 
 @Composable
@@ -1131,12 +1221,12 @@ private fun AssistantMessageCard(
                     }
                 }
 
-                if (message.isPending) {
-                    Text(
-                        text = stringResource(R.string.chat_generating),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                val awaitingFirstToken = message.isPending &&
+                    message.content.isBlank() &&
+                    message.reasoningContent.isNullOrBlank()
+
+                if (awaitingFirstToken) {
+                    ChatThinkingIndicator()
                 } else {
                     if (hasReasoning) {
                         Surface(
@@ -1197,6 +1287,10 @@ private fun AssistantMessageCard(
                             markdown = message.content,
                             contentColor = MaterialTheme.colorScheme.onSurface,
                         )
+                    }
+
+                    if (message.isPending) {
+                        ChatStreamingCaret()
                     }
 
                     if (message.toolCalls.isNotEmpty()) {
@@ -1290,10 +1384,9 @@ private fun AssistantToolProposalSection(
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(
-                            text = prettyFormatToolArguments(toolCall.argumentsJson),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurface,
+                        ToolArgumentsBlock(
+                            argumentsJson = toolCall.argumentsJson,
+                            stateKey = toolCall.id ?: toolCall.name,
                         )
                         val permissionNames = tool?.permissionNames.orEmpty()
                         if (permissionNames.isNotEmpty()) {
@@ -1380,17 +1473,72 @@ private fun ToolApprovalBadge(state: ChatToolApprovalState?) {
         ChatToolApprovalState.REJECTED -> stringResource(R.string.chat_tool_rejected)
         null -> return
     }
+    // 四态用四种色：待批准要显眼，执行中要"活"，已完成收敛，已拒绝明确是终止。
+    val containerColor = when (state) {
+        ChatToolApprovalState.PENDING -> MaterialTheme.colorScheme.tertiaryContainer
+        ChatToolApprovalState.RUNNING -> MaterialTheme.colorScheme.primaryContainer
+        ChatToolApprovalState.APPROVED -> MaterialTheme.colorScheme.secondaryContainer
+        ChatToolApprovalState.REJECTED -> MaterialTheme.colorScheme.surfaceContainerHighest
+        null -> MaterialTheme.colorScheme.secondaryContainer
+    }
+    val contentColor = when (state) {
+        ChatToolApprovalState.PENDING -> MaterialTheme.colorScheme.onTertiaryContainer
+        ChatToolApprovalState.RUNNING -> MaterialTheme.colorScheme.onPrimaryContainer
+        ChatToolApprovalState.APPROVED -> MaterialTheme.colorScheme.onSecondaryContainer
+        ChatToolApprovalState.REJECTED -> MaterialTheme.colorScheme.onSurfaceVariant
+        null -> MaterialTheme.colorScheme.onSecondaryContainer
+    }
     Surface(
         shape = RoundedCornerShape(999.dp),
-        color = MaterialTheme.colorScheme.secondaryContainer,
+        color = containerColor,
         tonalElevation = 0.dp,
     ) {
         Text(
             text = label,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            color = contentColor,
         )
+    }
+}
+
+/** 工具参数默认收成 5 行，长 JSON 不再把整张卡片撑开。 */
+@Composable
+private fun ToolArgumentsBlock(
+    argumentsJson: String,
+    stateKey: String,
+) {
+    val argsText = remember(argumentsJson) { prettyFormatToolArguments(argumentsJson) }
+    val lineCount = remember(argsText) { argsText.count { it == '\n' } + 1 }
+    val needsCollapse = lineCount > COLLAPSED_ARGUMENT_LINES
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        tonalElevation = 0.dp,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                text = argsText,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = if (needsCollapse && !expanded) COLLAPSED_ARGUMENT_LINES else Int.MAX_VALUE,
+                overflow = TextOverflow.Ellipsis,
+            )
+            if (needsCollapse) {
+                Text(
+                    text = stringResource(
+                        if (expanded) R.string.chat_tool_result_collapse else R.string.chat_tool_result_expand
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .clickable { expanded = !expanded },
+                )
+            }
+        }
     }
 }
 
@@ -1561,6 +1709,8 @@ private fun ErrorMessageCard(
     message: ChatMessage,
     modifier: Modifier = Modifier,
     onCopyMessage: () -> Unit,
+    onRetry: (() -> Unit)? = null,
+    retryEnabled: Boolean = true,
 ) {
     Box(
         modifier = modifier,
@@ -1588,6 +1738,19 @@ private fun ErrorMessageCard(
                     markdown = message.content,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 )
+                if (onRetry != null) {
+                    // 失败后最难忍受的是让用户重新打字，这里直接给一键重试。
+                    FilledTonalButton(
+                        onClick = onRetry,
+                        enabled = retryEnabled,
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.12f),
+                            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                        ),
+                    ) {
+                        Text(text = stringResource(R.string.chat_retry_action))
+                    }
+                }
                 MessageFooterRow(
                     timestampMillis = message.timestampMillis,
                     tokenCount = null,
@@ -1749,6 +1912,9 @@ private fun ChatAttachmentSheet(
         ChatToolAutoApprovalScope.STANDARD -> stringResource(R.string.chat_auto_approve_scope_standard)
         ChatToolAutoApprovalScope.ALL -> stringResource(R.string.chat_auto_approve_scope_all)
     }
+    // 自动批准是带安全后果的设置，改成"选一档 + 全部档二次确认"，不再靠反复点击循环。
+    var showScopeDialog by remember { mutableStateOf(false) }
+    var showAllConfirm by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -1885,17 +2051,25 @@ private fun ChatAttachmentSheet(
                 icon = Icons.Rounded.AutoAwesome,
                 selected = autoApprovalScope != ChatToolAutoApprovalScope.OFF,
                 position = ChatSheetSegmentPosition.Bottom,
-                onClick = { onAutoApprovalScopeChange(autoApprovalScope.next()) },
+                onClick = { showScopeDialog = true },
                 trailingContent = {
-                    Text(
-                        text = autoApprovalScopeLabel,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (autoApprovalScope != ChatToolAutoApprovalScope.OFF) {
-                            MaterialTheme.colorScheme.onSecondaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = autoApprovalScopeLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (autoApprovalScope != ChatToolAutoApprovalScope.OFF) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        Icon(
+                            imageVector = Icons.Rounded.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             )
         }
@@ -1919,6 +2093,127 @@ private fun ChatAttachmentSheet(
             }
         }
     }
+
+    if (showScopeDialog) {
+        AutoApprovalScopeDialog(
+            current = autoApprovalScope,
+            onDismiss = { showScopeDialog = false },
+            onSelect = { scope ->
+                showScopeDialog = false
+                if (scope == ChatToolAutoApprovalScope.ALL) {
+                    showAllConfirm = true
+                } else {
+                    onAutoApprovalScopeChange(scope)
+                }
+            },
+        )
+    }
+
+    if (showAllConfirm) {
+        AlertDialog(
+            onDismissRequest = { showAllConfirm = false },
+            title = { Text(stringResource(R.string.chat_auto_approve_all_warning_title)) },
+            text = { Text(stringResource(R.string.chat_auto_approve_all_warning_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showAllConfirm = false
+                        onAutoApprovalScopeChange(ChatToolAutoApprovalScope.ALL)
+                    }
+                ) {
+                    Text(stringResource(R.string.chat_auto_approve_all_warning_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAllConfirm = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun AutoApprovalScopeDialog(
+    current: ChatToolAutoApprovalScope,
+    onDismiss: () -> Unit,
+    onSelect: (ChatToolAutoApprovalScope) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.chat_auto_approve_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = stringResource(R.string.chat_auto_approve_description),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                ChatToolAutoApprovalScope.entries.forEach { scope ->
+                    val title = when (scope) {
+                        ChatToolAutoApprovalScope.OFF -> stringResource(R.string.chat_auto_approve_scope_off)
+                        ChatToolAutoApprovalScope.READ_ONLY -> stringResource(R.string.chat_auto_approve_scope_read_only)
+                        ChatToolAutoApprovalScope.LOW_RISK -> stringResource(R.string.chat_auto_approve_scope_low_risk)
+                        ChatToolAutoApprovalScope.STANDARD -> stringResource(R.string.chat_auto_approve_scope_standard)
+                        ChatToolAutoApprovalScope.ALL -> stringResource(R.string.chat_auto_approve_scope_all)
+                    }
+                    val description = when (scope) {
+                        ChatToolAutoApprovalScope.OFF -> stringResource(R.string.chat_auto_approve_scope_off_desc)
+                        ChatToolAutoApprovalScope.READ_ONLY -> stringResource(R.string.chat_auto_approve_scope_read_only_desc)
+                        ChatToolAutoApprovalScope.LOW_RISK -> stringResource(R.string.chat_auto_approve_scope_low_risk_desc)
+                        ChatToolAutoApprovalScope.STANDARD -> stringResource(R.string.chat_auto_approve_scope_standard_desc)
+                        ChatToolAutoApprovalScope.ALL -> stringResource(R.string.chat_auto_approve_scope_all_desc)
+                    }
+                    val isCurrent = scope == current
+                    Surface(
+                        onClick = { onSelect(scope) },
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isCurrent) {
+                            MaterialTheme.colorScheme.secondaryContainer
+                        } else {
+                            Color.Transparent
+                        },
+                        tonalElevation = 0.dp,
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = title,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
+                                )
+                                Text(
+                                    text = description,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            if (isCurrent) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Check,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.common_cancel))
+            }
+        },
+    )
 }
 
 @Composable

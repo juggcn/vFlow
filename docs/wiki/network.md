@@ -182,13 +182,13 @@ local token_response = vflow.network.http_request({
 
 ### vflow.ai.completion
 
-调用大模型 API (OpenAI/DeepSeek) 进行智能对话。
+调用大模型进行智能对话。编辑器里从「AI 对话」已配置的模型中选择，选中后自动带出地址 / 密钥 / 模型名；也可选「自定义」手动填写。
 
 #### Lua调用
 
 ```lua
 local result = vflow.ai.completion({
-    provider = "OpenAI",
+    base_url = "https://api.openai.com/v1",
     api_key = "sk-...",
     model = "gpt-3.5-turbo",
     prompt = "Hello, how are you?"
@@ -199,7 +199,7 @@ local result = vflow.ai.completion({
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `provider` | string | 是 | 服务商：`OpenAI`、`DeepSeek`、`自定义` |
+| `preset_id` | string | 否 | 「AI 对话」中已配置模型的 id，留空表示自定义 |
 | `base_url` | string | 否 | API Base URL |
 | `api_key` | string | 是 | API密钥 |
 | `model` | string | 是 | 模型名称 |

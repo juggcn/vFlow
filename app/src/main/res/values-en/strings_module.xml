@@ -1651,7 +1651,9 @@
     <string name="summary_vflow_snippet_find_until">Find until appears</string>
 
     <!-- vflow.ai.completion -->
-    <string name="module_vflow_ai_completion_desc">Call LLM API (OpenAI/DeepSeek) for intelligent conversation.</string>
+    <string name="module_vflow_ai_completion_desc">Pick a model configured in AI Chat and call it for intelligent conversation.</string>
+    <string name="label_ai_model_source">Model</string>
+    <string name="hint_ai_preset_empty">No model configured yet. Choose Custom and fill in the URL, API key and model below.</string>
     <string name="module_vflow_ai_completion_name">AI Chat</string>
     <string name="param_vflow_ai_completion_api_key_name">API Key</string>
     <string name="param_vflow_ai_completion_base_url_name">Base URL</string>
@@ -3243,6 +3245,7 @@
     <string name="summary_vflow_data_get_variable">Read variable </string>
     <string name="param_vflow_file_source_image">Source Image</string>
     <string name="param_vflow_network_ai_provider">Provider</string>
+    <string name="param_vflow_network_ai_preset">Model</string>
     <string name="param_vflow_network_ai_model">Model</string>
     <string name="param_vflow_network_ai_prompt">Prompt</string>
     <string name="param_vflow_network_ai_system_prompt">System Prompt</string>
@@ -3339,4 +3342,8 @@
     <string name="error_vflow_external_module_failed">The external extension returned a failure.</string>
     <string name="error_vflow_external_module_exception_title">Extension exception</string>
     <string name="error_vflow_external_module_unknown">An unknown error occurred.</string>
+    <string name="param_vflow_gkd_enable_mode">Rule group scope</string>
+    <string name="option_vflow_gkd_enable_all">All rules (recommended)</string>
+    <string name="option_vflow_gkd_enable_subscription_default">Subscription defaults only</string>
+    <string name="hint_vflow_gkd_enable_mode">Community GKD subscriptions usually ship only "Splash ads" enabled by default; full-screen ads, in-page ads, update prompts and other groups have enable set to false and must be switched on group by group in the GKD app. vFlow has no such group toggles, so "Subscription defaults only" drops most ad rules, while "All rules" ignores the defaults and loads everything.</string>
 </resources>

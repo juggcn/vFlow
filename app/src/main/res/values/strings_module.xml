@@ -1670,8 +1670,10 @@
     <string name="summary_vflow_snippet_find_until">查找直到找到文本 </string>
 
     <!-- vflow.ai.completion -->
-    <string name="module_vflow_ai_completion_desc">调用大模型 API (OpenAI/DeepSeek) 进行智能对话。</string>
+    <string name="module_vflow_ai_completion_desc">从「AI 对话」中已配置的模型里选择，调用大模型进行智能对话。</string>
     <string name="module_vflow_ai_completion_name">AI 对话</string>
+    <string name="label_ai_model_source">模型</string>
+    <string name="hint_ai_preset_empty">还没有可选的模型。选「自定义」，在下面填地址、密钥和模型名就能用。</string>
     <string name="param_vflow_ai_completion_api_key_name">API Key</string>
     <string name="param_vflow_ai_completion_base_url_name">Base URL</string>
     <string name="param_vflow_ai_completion_model_name">模型</string>
@@ -3261,6 +3263,7 @@
     <string name="summary_vflow_data_get_variable">读取变量 </string>
     <string name="param_vflow_file_source_image">源图片</string>
     <string name="param_vflow_network_ai_provider">服务商</string>
+    <string name="param_vflow_network_ai_preset">模型</string>
     <string name="param_vflow_network_ai_model">模型</string>
     <string name="param_vflow_network_ai_prompt">提示词</string>
     <string name="param_vflow_network_ai_system_prompt">系统提示词</string>
@@ -3342,4 +3345,8 @@
     <string name="error_vflow_external_module_failed">外部扩展返回失败。</string>
     <string name="error_vflow_external_module_exception_title">扩展执行异常</string>
     <string name="error_vflow_external_module_unknown">发生了未知错误</string>
+    <string name="param_vflow_gkd_enable_mode">规则组范围</string>
+    <string name="option_vflow_gkd_enable_all">全部规则（推荐）</string>
+    <string name="option_vflow_gkd_enable_subscription_default">仅订阅默认启用</string>
+    <string name="hint_vflow_gkd_enable_mode">社区 GKD 订阅一般只把「开屏广告」设为默认启用，全屏广告、局部广告、更新提示等组的 enable 都是 false，要靠用户在 GKD 客户端里逐组手动打开。vFlow 没有这套组开关界面，选「仅订阅默认启用」会丢掉绝大部分广告规则；「全部规则」忽略订阅里的默认开关，把规则全部载入。</string>
 </resources>

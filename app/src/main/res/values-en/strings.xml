@@ -29,6 +29,16 @@
     <string name="chat_auto_approve_scope_low_risk">Low risk</string>
     <string name="chat_auto_approve_scope_standard">Standard</string>
     <string name="chat_auto_approve_scope_all">All</string>
+    <string name="chat_auto_approve_scope_off_desc">Ask before every action</string>
+    <string name="chat_auto_approve_scope_read_only_desc">Auto-approve read and inspect actions only</string>
+    <string name="chat_auto_approve_scope_low_risk_desc">Auto-approve low-risk actions such as toggles</string>
+    <string name="chat_auto_approve_scope_standard_desc">Auto-approve routine actions including taps and typing</string>
+    <string name="chat_auto_approve_scope_all_desc">Auto-approve everything, including high-risk actions</string>
+    <string name="chat_auto_approve_all_warning_title">Allow all actions?</string>
+    <string name="chat_auto_approve_all_warning_message">The model will be able to run any tool without asking again, including high-risk actions that may modify data or system settings. Only enable this when you trust the current task.</string>
+    <string name="chat_auto_approve_all_warning_confirm">I understand, enable</string>
+    <string name="chat_retry_action">Retry</string>
+    <string name="chat_regenerate_action">Regenerate</string>
     <string name="chat_benchmark_title">Benchmark Mode</string>
     <string name="chat_benchmark_description">Run the built-in benchmark suite and score the current agent</string>
     <string name="chat_benchmark_action">Open</string>
@@ -892,7 +902,7 @@
     <string name="label_extended_params">Extended Parameters</string>
     <string name="label_prompt">Prompt</string>
     <string name="label_randomness">Randomness</string>
-    <string name="label_advanced_settings_url">Advanced Settings (URL/System)</string>
+    <string name="label_advanced_settings_url">Advanced Settings (System/Temperature)</string>
     <string name="text_scan_recent_20">Scan Recent 20</string>
     <string name="text_region_example">Region: 100,200,500,600</string>
     <string name="hint_coordinate_input">Enter coordinates x,y</string>
@@ -1204,6 +1214,10 @@
     <string name="permission_desc_usage_stats">Allows vFlow to read app usage statistics (like usage duration, last used time) for improved Agent accuracy.</string>
     <string name="permission_name_read_phone_state">Phone State</string>
     <string name="permission_desc_read_phone_state">Used to listen for phone state changes to implement the call trigger feature.</string>
+    <string name="permission_name_contacts">Contacts</string>
+    <string name="permission_desc_contacts">Used to query and add system contacts for contact automation.</string>
+    <string name="permission_name_sms_send">Send SMS</string>
+    <string name="permission_desc_sms_send">Used to send SMS messages from this device.</string>
     <string name="permission_name_call_phone">Make Phone Call</string>
     <string name="permission_desc_call_phone">Allows the app to directly dial phone numbers.</string>
 

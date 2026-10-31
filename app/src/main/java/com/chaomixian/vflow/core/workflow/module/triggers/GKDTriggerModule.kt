@@ -58,6 +58,20 @@ class GKDTriggerModule : BaseModule() {
             hint = "本地规则文件路径 (可选)"
         ),
         InputDefinition(
+            "enableMode",
+            "规则组范围",
+            ParameterType.ENUM,
+            "all",
+            options = listOf("all", "enabled"),
+            optionsStringRes = listOf(
+                R.string.option_vflow_gkd_enable_all,
+                R.string.option_vflow_gkd_enable_subscription_default
+            ),
+            nameStringRes = R.string.param_vflow_gkd_enable_mode,
+            hintStringRes = R.string.hint_vflow_gkd_enable_mode,
+            acceptsMagicVariable = false
+        ),
+        InputDefinition(
             "actionCd",
             "冷却时间(ms)",
             ParameterType.NUMBER,

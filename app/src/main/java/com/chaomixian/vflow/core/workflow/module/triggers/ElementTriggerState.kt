@@ -36,17 +36,22 @@ data class ElementTriggerState(
         }
 
         // 2. 检查触发延迟 (actionDelay)
-        if (actionDelay > 0) {
-            if (actionDelayTriggerTime == 0L) {
-                return TriggerStatus.WaitingDelay
-            }
-            if (t - actionDelayTriggerTime < actionDelay) {
-                return TriggerStatus.InDelay
-            }
+        //    actionDelayTriggerTime == 0 表示"尚未安排延迟执行"，此时必须放行到 Ready，
+        //    由 handler 负责安排延迟。否则 actionDelay > 0 的触发器永远进不了 Ready，
+        //    形同废掉（handler 在安排延迟之前就 continue 了）。
+        if (actionDelay > 0 && actionDelayTriggerTime > 0 && t - actionDelayTriggerTime < actionDelay) {
+            return TriggerStatus.InDelay
         }
 
-        // 3. 检查匹配时间窗口 (matchTime)
-        if (matchTime > 0) {
+        // 3. 检查匹配延迟 (matchDelay)：节点需持续出现该时长才可触发
+        //    matchChangedTime == 0 表示还没观察到节点出现，不拦截
+        if (matchDelay > 0 && matchChangedTime > 0 && t - matchChangedTime < matchDelay) {
+            return TriggerStatus.MatchDelay
+        }
+
+        // 4. 检查匹配时间窗口 (matchTime)：从首次匹配起算，超窗作废
+        //    matchChangedTime == 0 是"尚未匹配"而不是"很久以前匹配"，不能直接判 Expired
+        if (matchTime > 0 && matchChangedTime > 0) {
             if (t - matchChangedTime > matchTime + matchDelay) {
                 return TriggerStatus.Expired
             }

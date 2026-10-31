@@ -29,6 +29,16 @@
     <string name="chat_auto_approve_scope_low_risk">低风险</string>
     <string name="chat_auto_approve_scope_standard">常规操作</string>
     <string name="chat_auto_approve_scope_all">全部</string>
+    <string name="chat_auto_approve_scope_off_desc">每一步操作都先征求你的同意</string>
+    <string name="chat_auto_approve_scope_read_only_desc">只自动放行查看、读取类操作</string>
+    <string name="chat_auto_approve_scope_low_risk_desc">自动放行低风险操作，如开关类设置</string>
+    <string name="chat_auto_approve_scope_standard_desc">自动放行常规操作，包含点击与输入</string>
+    <string name="chat_auto_approve_scope_all_desc">自动放行全部操作，含高风险操作</string>
+    <string name="chat_auto_approve_all_warning_title">确定放开全部操作？</string>
+    <string name="chat_auto_approve_all_warning_message">之后模型无需再询问就可以执行任何工具，包括可能修改数据或系统设置的高风险操作。只在明确信任当前任务时开启。</string>
+    <string name="chat_auto_approve_all_warning_confirm">我了解，开启</string>
+    <string name="chat_retry_action">重试</string>
+    <string name="chat_regenerate_action">重新生成</string>
     <string name="chat_benchmark_title">Benchmark 模式</string>
     <string name="chat_benchmark_description">运行内置端到端场景并输出稳定分数</string>
     <string name="chat_benchmark_action">打开</string>
@@ -892,7 +902,7 @@
     <string name="label_extended_params">扩展参数 </string>
     <string name="label_prompt">提示词 </string>
     <string name="label_randomness">随机性 </string>
-    <string name="label_advanced_settings_url">高级设置 (URL/System)</string>
+    <string name="label_advanced_settings_url">高级设置 (System/温度)</string>
     <string name="text_scan_recent_20">扫描最近 20 条</string>
     <string name="text_region_example">区域: 100,200,500,600</string>
     <string name="hint_coordinate_input">输入坐标 x,y</string>
@@ -1204,6 +1214,10 @@
     <string name="permission_desc_usage_stats">允许 vFlow 读取应用的使用统计信息（如使用时长、最后使用时间），提高 Agent 行为准确度。</string>
     <string name="permission_name_read_phone_state">电话状态</string>
     <string name="permission_desc_read_phone_state">用于监听电话状态变化，以实现电话触发器功能。</string>
+    <string name="permission_name_contacts">联系人权限</string>
+    <string name="permission_desc_contacts">用于查询和添加系统联系人，以实现联系人自动化操作。</string>
+    <string name="permission_name_sms_send">发送短信权限</string>
+    <string name="permission_desc_sms_send">用于以本机身份发送短信。</string>
     <string name="permission_name_call_phone">拨打电话</string>
     <string name="permission_desc_call_phone">允许应用直接拨打电话号码。</string>
 

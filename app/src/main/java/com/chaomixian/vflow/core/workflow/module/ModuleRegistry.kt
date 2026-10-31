@@ -152,6 +152,9 @@ object ModuleRegistry {
         register(ParseXmlModule(), context)
         register(CommentModule(), context)
         register(FileOperationModule(), context)
+        register(FileAdvancedModule(), context)
+        register(ArchiveModule(), context)
+        register(QrCodeModule(), context)
 
         // 文件
         register(ImportImageModule(), context)
@@ -199,6 +202,8 @@ object ModuleRegistry {
         register(WakeAndUnlockScreenModule(), context)
         register(SleepScreenModule(), context)
         register(ReadSmsModule(), context)
+        register(SendSmsModule(), context)
+        register(ContactModule(), context)
         register(FindNotificationModule(), context)
         register(RemoveNotificationModule(), context)
         register(GetAppUsageStatsModule(), context)

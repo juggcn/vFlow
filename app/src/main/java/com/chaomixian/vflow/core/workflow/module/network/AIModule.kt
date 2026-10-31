@@ -23,32 +23,20 @@ import java.util.concurrent.TimeUnit
 
 /**
  * "AI 对话" 模块。
- * 支持 OpenAI、DeepSeek 等兼容 OpenAI 接口的大模型服务。
+ * 模型来源为「AI 对话」里已配置的模型，选中后自动带出地址 / 密钥 / 模型名；
+ * 也可以选「自定义」手动填写。
  */
 class AIModule : BaseModule() {
     companion object {
-        const val PROVIDER_OPENAI = "openai"
-        const val PROVIDER_DEEPSEEK = "deepseek"
-        const val PROVIDER_CUSTOM = "custom"
+        /** preset_id 为空表示自定义，手动填 Base URL / API Key / 模型。 */
+        const val PRESET_CUSTOM = ""
 
-        val PROVIDER_INPUT_DEFINITION = InputDefinition(
-            "provider",
-            "服务商",
-            ParameterType.ENUM,
-            PROVIDER_OPENAI,
-            options = listOf(PROVIDER_OPENAI, PROVIDER_DEEPSEEK, PROVIDER_CUSTOM),
-            nameStringRes = R.string.param_vflow_network_ai_provider,
-            optionsStringRes = listOf(
-                R.string.option_vflow_ai_completion_provider_openai,
-                R.string.option_vflow_ai_completion_provider_deepseek,
-                R.string.option_vflow_ai_completion_provider_custom
-            ),
-            legacyValueMap = mapOf(
-                "OpenAI" to PROVIDER_OPENAI,
-                "DeepSeek" to PROVIDER_DEEPSEEK,
-                "自定义" to PROVIDER_CUSTOM,
-                "Custom" to PROVIDER_CUSTOM
-            )
+        val PRESET_INPUT_DEFINITION = InputDefinition(
+            "preset_id",
+            "模型",
+            ParameterType.STRING,
+            PRESET_CUSTOM,
+            nameStringRes = R.string.param_vflow_network_ai_preset
         )
     }
 
@@ -56,7 +44,7 @@ class AIModule : BaseModule() {
     override val metadata = ActionMetadata(
         name = "AI 对话",  // Fallback
         nameStringRes = R.string.module_vflow_ai_completion_name,
-        description = "调用大模型 API (OpenAI/DeepSeek) 进行智能对话。",  // Fallback
+        description = "从「AI 对话」中已配置的模型里选择，调用大模型进行智能对话。",  // Fallback
         descriptionStringRes = R.string.module_vflow_ai_completion_desc,
         iconRes = R.drawable.rounded_hexagon_nodes_24,
         category = "网络",
@@ -68,7 +56,8 @@ class AIModule : BaseModule() {
     private val gson = Gson()
 
     override fun getInputs(): List<InputDefinition> = listOf(
-        PROVIDER_INPUT_DEFINITION,
+        PRESET_INPUT_DEFINITION,
+        InputDefinition("preset_name", "模型名", ParameterType.STRING, "", isHidden = true),
         InputDefinition("base_url", "Base URL", ParameterType.STRING, "https://api.openai.com/v1", nameStringRes = R.string.param_vflow_network_ai_base_url),
         InputDefinition("api_key", "API Key", ParameterType.STRING, "", nameStringRes = R.string.param_vflow_network_ai_api_key),
         InputDefinition("model", "模型", ParameterType.STRING, "gpt-3.5-turbo", nameStringRes = R.string.param_vflow_network_ai_model),
@@ -86,20 +75,18 @@ class AIModule : BaseModule() {
 
     // 摘要显示逻辑
     override fun getSummary(context: Context, step: ActionStep): CharSequence {
-        val provider = PROVIDER_INPUT_DEFINITION.normalizeEnumValueOrNull(step.parameters["provider"] as? String) ?: PROVIDER_OPENAI
         val promptText = step.parameters["prompt"] as? String ?: ""
-        val providerDisplay = getProviderDisplayName(context, provider)
+        val modelDisplay = getModelDisplayName(context, step)
 
         // 如果内容是"复杂"的（多变量或长文本），VariableResolver.isComplex 会返回 true
         if (VariableResolver.isComplex(promptText)) {
-            val providerPill = PillUtil.createPillFromParam(step.parameters["provider"], PROVIDER_INPUT_DEFINITION, isModuleOption = true)
             val prefix = context.getString(R.string.summary_vflow_network_ai_prefix)
             val suffix = context.getString(R.string.summary_vflow_network_ai_middle)
-            return PillUtil.buildSpannable(context, prefix, providerPill, suffix, PillUtil.richTextPreview(promptText))
+            return PillUtil.buildSpannable(context, prefix, modelDisplay, suffix, PillUtil.richTextPreview(promptText))
         } else {
             // 如果内容简单（单变量或短文本），显示完整的摘要（包含 Prompt 药丸）
             val promptPill = PillUtil.createPillFromParam(step.parameters["prompt"], getInputs().find { it.id == "prompt" })
-            val prefix = context.getString(R.string.summary_vflow_network_ai_with, providerDisplay)
+            val prefix = context.getString(R.string.summary_vflow_network_ai_with, modelDisplay)
             return PillUtil.buildSpannable(context, prefix, promptPill)
         }
     }
@@ -204,11 +191,14 @@ class AIModule : BaseModule() {
         }
     }
 
-    private fun getProviderDisplayName(context: Context, provider: String): String {
-        return when (provider) {
-            PROVIDER_DEEPSEEK -> context.getString(R.string.option_vflow_ai_completion_provider_deepseek)
-            PROVIDER_CUSTOM -> context.getString(R.string.option_vflow_ai_completion_provider_custom)
-            else -> context.getString(R.string.option_vflow_ai_completion_provider_openai)
-        }
+    /**
+     * 摘要里展示的模型名称：优先用选中预设的名字，没有就退回模型名，
+     * 再没有就是「自定义」。
+     */
+    private fun getModelDisplayName(context: Context, step: ActionStep): String {
+        val presetName = (step.parameters["preset_name"] as? String).orEmpty().trim()
+        if (presetName.isNotEmpty()) return presetName
+        val model = (step.parameters["model"] as? String).orEmpty().trim()
+        return model.ifBlank { context.getString(R.string.option_vflow_ai_completion_provider_custom) }
     }
 }

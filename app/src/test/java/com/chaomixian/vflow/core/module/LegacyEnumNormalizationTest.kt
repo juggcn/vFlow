@@ -125,8 +125,11 @@ class LegacyEnumNormalizationTest {
     }
 
     @Test
-    fun `ai provider input definition normalizes legacy provider`() {
-        assertEquals(AIModule.PROVIDER_OPENAI, AIModule.PROVIDER_INPUT_DEFINITION.normalizeEnumValueOrNull("OpenAI"))
+    fun `ai module selects model from chat presets instead of fixed provider`() {
+        val inputs = AIModule().getInputs()
+
+        assertTrue(inputs.any { it.id == "preset_id" })
+        assertFalse(inputs.any { it.id == "provider" })
     }
 
     @Test

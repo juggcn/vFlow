@@ -10,41 +10,45 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="@string/label_service_provider"
+        android:text="@string/label_ai_model_source"
         android:textAppearance="?attr/textAppearanceLabelLarge" />
 
     <com.google.android.material.chip.ChipGroup
-        android:id="@+id/cg_provider"
+        android:id="@+id/cg_preset"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
         app:singleSelection="true"
-        app:selectionRequired="true">
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chip_openai"
-            style="@style/Widget.Material3.Chip.Filter"
-            android:layout_width="wrap_content"
+        app:selectionRequired="true" />
+
+    <TextView
+        android:id="@+id/tv_preset_hint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/hint_ai_preset_empty"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:visibility="gone" />
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/til_base_url"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:hint="API Base URL">
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/et_base_url"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/text_openai" />
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chip_deepseek"
-            style="@style/Widget.Material3.Chip.Filter"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/text_deepseek" />
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chip_custom"
-            style="@style/Widget.Material3.Chip.Filter"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/text_custom" />
-    </com.google.android.material.chip.ChipGroup>
+            android:inputType="textUri" />
+    </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.textfield.TextInputLayout
         android:id="@+id/til_api_key"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
+        android:layout_marginTop="8dp"
         android:hint="API Key (sk-...)">
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/et_api_key"
@@ -127,19 +131,6 @@
             android:layout_height="wrap_content"
             android:orientation="vertical"
             android:visibility="gone">
-
-            <com.google.android.material.textfield.TextInputLayout
-                android:id="@+id/til_base_url"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:hint="API Base URL">
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/et_base_url"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:inputType="textUri" />
-            </com.google.android.material.textfield.TextInputLayout>
 
             <com.google.android.material.textfield.TextInputLayout
                 android:id="@+id/til_system_prompt"

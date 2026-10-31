@@ -1485,7 +1485,9 @@
     <string name="module_vflow_snippet_find_until_name">見つかるまで検索</string>
     <string name="module_vflow_snippet_find_until_desc">画面上で指定したテキストを見つかるまで繰り返し検索します</string>
     <string name="summary_vflow_snippet_find_until">テキストが見つかるまで検索 </string>
-    <string name="module_vflow_ai_completion_desc">大規模モデル API (OpenAI/DeepSeek) を呼び出して対話します。</string>
+    <string name="module_vflow_ai_completion_desc">「AI チャット」で設定済みのモデルを選んで対話します。</string>
+    <string name="label_ai_model_source">モデル</string>
+    <string name="hint_ai_preset_empty">モデルが未設定です。「カスタム」を選び、下の URL・API キー・モデル名を入力してください。</string>
     <string name="module_vflow_ai_completion_name">AI対話</string>
     <string name="param_vflow_ai_completion_api_key_name">API Key</string>
     <string name="param_vflow_ai_completion_base_url_name">Base URL</string>
@@ -2877,6 +2879,7 @@
     <string name="summary_vflow_data_get_variable">変数を取得 </string>
     <string name="param_vflow_file_source_image">元画像</string>
     <string name="param_vflow_network_ai_provider">プロバイダー</string>
+    <string name="param_vflow_network_ai_preset">モデル</string>
     <string name="param_vflow_network_ai_model">モデル</string>
     <string name="param_vflow_network_ai_prompt">プロンプト</string>
     <string name="param_vflow_network_ai_system_prompt">システムプロンプト</string>
@@ -2958,4 +2961,8 @@
     <string name="error_vflow_external_module_failed">外部拡張が失敗を返しました。</string>
     <string name="error_vflow_external_module_exception_title">拡張機能の実行例外</string>
     <string name="error_vflow_external_module_unknown">不明なエラーが発生しました</string>
+    <string name="param_vflow_gkd_enable_mode">ルールグループの範囲</string>
+    <string name="option_vflow_gkd_enable_all">すべてのルール（推奨）</string>
+    <string name="option_vflow_gkd_enable_subscription_default">購読の既定のみ</string>
+    <string name="hint_vflow_gkd_enable_mode">コミュニティの GKD 購読は通常「スプラッシュ広告」だけが既定で有効で、全画面広告・局部広告・更新通知などのグループは enable が false のため、GKD アプリでグループごとに手動で有効化する必要があります。vFlow にはその切り替え UI がないため、「購読の既定のみ」では広告ルールの大半が失われます。「すべてのルール」は購読の既定を無視してすべて読み込みます。</string>
 </resources>

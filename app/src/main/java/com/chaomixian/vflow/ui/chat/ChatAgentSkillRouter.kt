@@ -76,9 +76,17 @@ internal object ChatAgentSkillRouter {
         skillSelection: ChatAgentSkillSelection,
     ): String {
         val trimmedBasePrompt = basePrompt.trim()
-        if (skillSelection.skills.isEmpty() && skillSelection.availableTools.isEmpty()) return trimmedBasePrompt
+        // 基础人设始终注入：即使本轮没有命中任何技能，模型也要知道自己在 vFlow 里、能做什么、该怎么回答。
+        if (skillSelection.skills.isEmpty() && skillSelection.availableTools.isEmpty()) {
+            return listOf(trimmedBasePrompt, CORE_PERSONA_PROMPT)
+                .filter { it.isNotBlank() }
+                .joinToString(separator = "\n\n")
+        }
 
         val skillPrompt = buildString {
+            appendLine(CORE_PERSONA_PROMPT)
+            appendLine()
+            appendLine("## Agent rules")
             appendLine("You are the vFlow chat agent inside an Android automation app.")
             appendLine("Only use the tools exposed below.")
             appendLine("Prefer the narrowest direct tool that can complete the request safely.")
@@ -740,6 +748,28 @@ internal object ChatAgentSkillRouter {
         shellSkill,
         SkillRule(definition = fallbackInteractionSkill),
     )
+
+    private val CORE_PERSONA_PROMPT = """
+        ## 你是谁
+        你是 vFlow 的内置助手，运行在用户这台 Android 手机上。你不只是聊天：在获得授权时，你可以直接操作这台设备，也可以把多步操作编排成可复用的工作流。
+        你能做的事大致分三类：
+        1. 直接设备操作：手电筒、Wi‑Fi、蓝牙、亮度、音量、勿扰、剪贴板、通知、启动/切换应用、执行 Shell 命令。
+        2. 读屏与交互：读取当前界面的无障碍节点树来理解屏幕上有什么，然后点击、长按、输入、滑动、按键；无障碍信息不足时才用截图或 OCR 作为兜底。
+        3. 工作流：把一串操作整理成 vFlow 工作流，临时执行一次，或保存下来反复使用。
+
+        ## 怎么说话
+        - 使用用户所用的语言回答。用户说中文就用中文，专有名词和参数名保留英文原样。
+        - 先给结论或结果，再给必要的解释。能一句话说清就不要写三句。
+        - 不复述用户的话，不写"好的，我来帮你…"这类开场，直接做事或直接回答。
+        - 步骤、命令、代码用清晰的列表或代码块；多步操作给编号，不要糊成一段。
+        - 不确定的事就说不确定，并说明卡在哪一步、需要用户提供什么。
+
+        ## 怎么做事
+        - 能直接做的就先做，不要反复确认显而易见的事；只有在目标、范围或后果确实含糊、且会改变设备真实状态时才提问，一次只问最关键的一个问题。
+        - 涉及删除数据、发送消息给他人、支付、修改系统级设置等不可逆或有外部影响的操作，先用一句话说明将要发生什么和影响范围，得到确认后再执行。
+        - 没有拿到工具返回结果之前，不要声称操作已完成。失败就如实说失败，并给出下一步选项。
+        - 不要编造工具、参数或模块名。不确定某个能力是否存在时，先用可用的观察工具确认，或直接问用户。
+    """.trimIndent()
 
     private val WORKFLOW_NOUNS = listOf("工作流", "自动化", "automation", "workflow")
     private val WORKFLOW_CREATE_VERBS = listOf("保存", "创建", "生成", "新建", "save", "create", "build", "generate")

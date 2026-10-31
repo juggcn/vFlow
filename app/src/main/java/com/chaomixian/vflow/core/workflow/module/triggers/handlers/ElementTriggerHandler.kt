@@ -9,7 +9,12 @@ import com.chaomixian.vflow.core.utils.getCompatStableId
 import com.chaomixian.vflow.core.workflow.model.TriggerSpec
 import com.chaomixian.vflow.core.workflow.module.triggers.*
 import com.chaomixian.vflow.services.ServiceStateBus
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import li.songe.selector.MatchOption
 import li.songe.selector.QueryContext
 import li.songe.selector.Selector
@@ -36,6 +41,13 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
     // 监听Job
     private var listeningJob: Job? = null
 
+    // 事件后补查Job（等控件延迟渲染）
+    private var recheckJob: Job? = null
+
+    // 串行化匹配检查：事件流与补查可能并发执行，避免状态竞争
+    private val checkMutex = Mutex()
+
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
     override fun startListening(context: Context) {
         DebugLogger.d(TAG, "开始监听元素变化")
 
@@ -47,13 +59,34 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
                 ServiceStateBus.windowChangeEventFlow.collect { (packageName, className) ->
                     DebugLogger.d(TAG, "收到窗口变化事件: $packageName / $className")
                     checkAndTriggerWorkflows(context)
+                    scheduleRecheck(context)
                 }
             }
             launch {
-                ServiceStateBus.windowContentChangedFlow.collect { (packageName, className) ->
-                    DebugLogger.d(TAG, "收到窗口内容变化事件: $packageName / $className")
-                    checkAndTriggerWorkflows(context)
-                }
+                // 内容变化事件高频（列表滚动、倒计时文字每秒/每 100ms 刷新可达几十次）。
+                // 用 sample 而非 debounce：debounce 在事件持续不断时会被一直重置而永不 emit，
+                // 倒计时按钮就会整段漏掉；sample 按固定周期取最新值，事件再密也一定会触发检查。
+                ServiceStateBus.windowContentChangedFlow
+                    .sample(TRIGGER_CONTENT_DEBOUNCE_MS)
+                    .collect { (packageName, className) ->
+                        DebugLogger.d(TAG, "收到窗口内容变化事件: $packageName / $className")
+                        checkAndTriggerWorkflows(context)
+                        scheduleRecheck(context)
+                    }
+            }
+        }
+    }
+
+    /**
+     * 事件后的短周期补查：控件常在页面出现后 50~300ms 才渲染完成，
+     * 事件瞬间查一遍树可能漏掉，未命中时每隔一小段时间重查（新事件会取消上一轮）。
+     */
+    private fun scheduleRecheck(context: Context) {
+        recheckJob?.cancel()
+        recheckJob = triggerScope.launch {
+            repeat(TRIGGER_RECHECK_TIMES) {
+                delay(TRIGGER_RECHECK_INTERVAL_MS)
+                checkAndTriggerWorkflows(context)
             }
         }
     }
@@ -62,6 +95,8 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
         DebugLogger.d(TAG, "停止监听元素变化")
         listeningJob?.cancel()
         listeningJob = null
+        recheckJob?.cancel()
+        recheckJob = null
         triggerStates.clear()
     }
 
@@ -118,12 +153,21 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
     /**
      * 检查并触发匹配的工作流
      */
-    private fun checkAndTriggerWorkflows(context: Context) {
+    private suspend fun checkAndTriggerWorkflows(context: Context) {
         // 先同步状态
         syncTriggerStates()
 
         val service = ServiceStateBus.getAccessibilityService() ?: return
-        val rootNode = service.rootInActiveWindow ?: return
+        // 扫描所有窗口（含 Dialog / PopupWindow 等弹窗层），任一窗口命中即可
+        val windowRoots = collectWindowRoots(service)
+        if (windowRoots.isEmpty()) return
+
+        checkMutex.withLock {
+            checkAndTriggerWorkflowsLocked(context, windowRoots)
+        }
+    }
+
+    private fun checkAndTriggerWorkflowsLocked(context: Context, windowRoots: List<AccessibilityNodeInfo>) {
 
         val t = System.currentTimeMillis()
 
@@ -132,39 +176,53 @@ class ElementTriggerHandler : ListeningTriggerHandler() {
 
         for (state in triggerStates) {
             try {
-                // 1. 检查状态
+                // 1. 匹配选择器：任一窗口命中即可
+                var matchedNode: AccessibilityNodeInfo? = null
+                for (windowRoot in windowRoots) {
+                    val node = transform.querySelectorAll(windowRoot, state.selector, MatchOption(fastQuery = true))
+                        .firstOrNull()
+                    if (node != null) {
+                        matchedNode = node
+                        break
+                    }
+                }
+
+                if (matchedNode == null) {
+                    // 节点消失：重置首次匹配时间，下次重新累计 matchDelay
+                    if (state.matchChangedTime != 0L) {
+                        state.matchChangedTime = 0L
+                    }
+                    continue
+                }
+
+                // 2. 记录首次匹配时间（matchDelay / matchTime 的计时起点）
+                if (state.matchChangedTime == 0L) {
+                    state.matchChangedTime = t
+                }
+
+                // 3. 状态检查（冷却 / matchDelay 持续时长 / matchTime 有效窗 / 次数）
                 val status = state.getStatus()
                 if (status != TriggerStatus.Ready) {
                     continue
                 }
 
-                // 2. 匹配选择器
-                val matchedNode = transform.querySelectorAll(rootNode, state.selector, MatchOption(fastQuery = true))
-                    .firstOrNull()
-                if (matchedNode == null) {
-                    continue
-                }
-
+                // 4. 同一次检查中去重（避免不同选择器匹配到同一节点重复触发）
                 val nodeId = matchedNode.getCompatStableId()
-
-                // 3. 同一次检查中去重（避免不同选择器匹配到同一节点重复触发）
                 if (nodeId in matchedThisTime) {
                     continue
                 }
                 matchedThisTime.add(nodeId)
 
-                // 4. 更新匹配时间
-                state.matchChangedTime = t
-
                 // 5. 处理触发延迟
+                val nodeForTrigger = matchedNode
                 if (state.actionDelay > 0) {
                     state.actionDelayTriggerTime = t
                     triggerScope.launch {
                         delay(state.actionDelay)
-                        performTrigger(context, state, matchedNode)
+                        performTrigger(context, state, nodeForTrigger)
                     }
                 } else {
-                    performTrigger(context, state, matchedNode)
+                    performTrigger(context, state, nodeForTrigger)
                 }
             } catch (e: Exception) {
                 DebugLogger.e(TAG, "处理工作流 '${state.trigger.workflowName}' 时出错", e)
