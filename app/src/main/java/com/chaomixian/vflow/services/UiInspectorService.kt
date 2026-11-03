@@ -285,8 +285,11 @@ class UiInspectorService : Service() {
         var initialTouchX = 0f
         var initialTouchY = 0f
         var isDragging = false
-        var downTime = 0L
+        /** 按住到时长就算长按，不必等松开；松手时靠它把短按吞掉 */
+        var longPressTriggered = false
         val LONG_PRESS_TIMEOUT = 500L // 长按阈值（毫秒）
+
+        val longPressRunnable = Runnable { longPressTriggered = true }
 
         floatIconView?.setOnTouchListener { _, event ->
             when (event.action) {
@@ -296,7 +299,8 @@ class UiInspectorService : Service() {
                     initialTouchX = event.rawX
                     initialTouchY = event.rawY
                     isDragging = false
-                    downTime = System.currentTimeMillis()
+                    longPressTriggered = false
+                    floatIconView?.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT)
 
                     val service = ServiceStateBus.getAccessibilityService()
                     if (service != null) {
@@ -316,6 +320,8 @@ class UiInspectorService : Service() {
 
                     if (abs(dx) > 10 || abs(dy) > 10) {
                         isDragging = true
+                        // 一旦开始拖动就不再算长按，拖动过程中不该被判定成按住不放
+                        floatIconView?.removeCallbacks(longPressRunnable)
                     }
 
                     iconParams.x = initialX + dx
@@ -326,16 +332,18 @@ class UiInspectorService : Service() {
                     true
                 }
                 MotionEvent.ACTION_UP -> {
+                    floatIconView?.removeCallbacks(longPressRunnable)
                     flushPendingInspection()
-                    val pressDuration = System.currentTimeMillis() - downTime
-                    if (!isDragging && pressDuration >= LONG_PRESS_TIMEOUT) {
-                        // 长按：录制 / 关闭菜单
-                        showServiceMenu()
-                    } else if (!isDragging) {
-                        // 短按：显示详情
+                    if (!isDragging && !longPressTriggered) {
+                        // 短按：显示详情。长按什么都不做，也不再弹菜单
                         inspectCurrentIconCenter()
                         showNodeDetails()
                     }
+                    currentRoots = emptyList()
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    floatIconView?.removeCallbacks(longPressRunnable)
                     currentRoots = emptyList()
                     true
                 }
@@ -385,8 +393,7 @@ class UiInspectorService : Service() {
     }
 
     private fun updateCurrentCoordinateLabel(x: Int, y: Int) {
-        // 录制中在坐标前面加个实心点，一眼看出当前状态
-        val newLabel = if (InteractionRecorder.isRecording) "● $x,$y" else "$x,$y"
+        val newLabel = "$x,$y"
         val labelView = coordinateLabelView ?: return
 
         if (labelView.text != newLabel) {
@@ -491,63 +498,6 @@ class UiInspectorService : Service() {
 
         // 没有子节点命中时返回自身，但面积为 0 的节点（隐藏/占位）不算
         return if (bounds.width() > 0 && bounds.height() > 0) node else null
-    }
-
-    // --- 录制 ---
-
-    /**
-     * 长按悬浮图标弹出的菜单。
-     *
-     * 录制期间不挂任何全屏捕获层——用户照常操作 App，录制靠无障碍事件完成，
-     * 这样才看得到真实界面反馈（旧的触摸回放是吃掉触摸后盲录的）。
-     */
-    private fun showServiceMenu() {
-        val dialogContext = ThemeUtils.createThemedContext(
-            ServiceStateBus.getAccessibilityService() ?: this
-        )
-
-        val labels = mutableListOf<String>()
-        val actions = mutableListOf<() -> Unit>()
-
-        if (InteractionRecorder.isRecording) {
-            labels.add(getString(R.string.ui_inspector_menu_stop_record, InteractionRecorder.capturedCount))
-            actions.add { stopRecordingAndInsert() }
-        } else {
-            labels.add(getString(R.string.ui_inspector_menu_start_record))
-            actions.add { startRecording() }
-        }
-        labels.add(getString(R.string.ui_inspector_menu_close))
-        actions.add { stopSelf() }
-
-        val dialog = MaterialAlertDialogBuilder(dialogContext)
-            .setTitle(R.string.ui_inspector_menu_title)
-            .setItems(labels.toTypedArray()) { _, which ->
-                actions.getOrNull(which)?.invoke()
-            }
-            .create()
-        dialog.window?.setType(overlayWindowType)
-        dialog.show()
-    }
-
-    private fun startRecording() {
-        InteractionRecorder.startRecording()
-        refreshCurrentProbeCoordinate()
-        Toast.makeText(this, getString(R.string.ui_inspector_record_started), Toast.LENGTH_LONG).show()
-    }
-
-    private fun stopRecordingAndInsert() {
-        val count = InteractionRecorder.stopRecording()
-        refreshCurrentProbeCoordinate()
-
-        if (count == 0) {
-            Toast.makeText(this, getString(R.string.ui_inspector_record_empty), Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (!enableWorkflowInsert) {
-            Toast.makeText(this, getString(R.string.ui_inspector_record_need_editor), Toast.LENGTH_LONG).show()
-            return
-        }
-        sendInsertRequest(WorkflowInspectorInsertRequest.recordedSteps(count))
     }
 
     // --- 弹窗显示逻辑 ---
@@ -799,14 +749,21 @@ class UiInspectorService : Service() {
         return WorkflowInspectorInsertRequest.launchActivity(packageName, activityName)
     }
 
-    private fun sendInsertRequest(request: WorkflowInspectorInsertRequest?) {
-        if (!enableWorkflowInsert || request == null) return
-        LocalBroadcastManager.getInstance(this).sendBroadcast(
+    /**
+     * 发送插入请求。返回是否真的送达了接收方——
+     * LocalBroadcastManager 同步分发，没有接收者时返回 false，可据此判断编辑器是否还在。
+     */
+    private fun sendInsertRequest(request: WorkflowInspectorInsertRequest?): Boolean {
+        if (request == null) return false
+        val delivered = LocalBroadcastManager.getInstance(this).sendBroadcast(
             Intent(WorkflowInspectorInsertRequest.ACTION_INSERT_REQUEST).apply {
                 putExtra(WorkflowInspectorInsertRequest.EXTRA_INSERT_REQUEST, request)
             }
         )
-        Toast.makeText(this, R.string.ui_inspector_insert_request_sent, Toast.LENGTH_SHORT).show()
+        if (delivered) {
+            Toast.makeText(this, R.string.ui_inspector_insert_request_sent, Toast.LENGTH_SHORT).show()
+        }
+        return delivered
     }
 
     private fun isInsertableValue(value: String?): Boolean {

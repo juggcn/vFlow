@@ -117,7 +117,8 @@
 
         <activity
             android:name=".ui.workflow_editor.WorkflowEditorActivity"
-            android:exported="false" />
+            android:exported="false"
+            android:launchMode="singleTop" />
 
         <activity
             android:name=".ui.workflow_editor.PoseTriggerRecorderActivity"

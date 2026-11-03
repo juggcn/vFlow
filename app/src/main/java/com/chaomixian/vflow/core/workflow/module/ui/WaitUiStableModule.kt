@@ -67,7 +67,7 @@ class WaitUiStableModule : BaseModule() {
             INPUT_STABLE_MS,
             "稳定时长(毫秒)",
             ParameterType.NUMBER,
-            500,
+            1000,
             acceptsMagicVariable = true,
             hint = "界面连续这么久没有变化就算稳定"
         ),
@@ -101,7 +101,7 @@ class WaitUiStableModule : BaseModule() {
         val service = context.services.get(VFlowAccessibilityService::class)
             ?: return ExecutionResult.Failure("等待失败", "无障碍服务未启动")
 
-        val stableMs = (context.getVariableAsInt(INPUT_STABLE_MS) ?: 500).toLong().coerceAtLeast(50L)
+        val stableMs = (context.getVariableAsInt(INPUT_STABLE_MS) ?: 1000).toLong().coerceAtLeast(50L)
         val timeoutMs = (context.getVariableAsInt(INPUT_TIMEOUT_MS) ?: 5000).toLong().coerceAtLeast(stableMs)
         val pollMs = (context.getVariableAsInt(INPUT_POLL_MS) ?: 150).toLong().coerceAtLeast(50L)
 

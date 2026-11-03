@@ -71,15 +71,6 @@ open class AccessibilityService : AccessibilityService() {
             )
         }
 
-        // 交互录制：点击与文本输入直接交给录制器。未在录制时它在第一行就返回，
-        // 不会对普通触发流程产生任何开销。必须放在 packageName 判空之前，
-        // 因为录制依赖 event.source，而部分事件拿不到包名。
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
-            event.eventType == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED
-        ) {
-            InteractionRecorder.onAccessibilityEvent(this, event)
-        }
-
         // TYPE_WINDOWS_CHANGED: 窗口列表变化。浮层广告（WindowManager 添加的悬浮窗、PopupWindow）
         // 不是 Activity，系统只发这个事件、不发 TYPE_WINDOW_STATE_CHANGED；
         // 不处理它，浮层广告弹出时触发器根本不会被唤醒，只有底层页面的文字变化在触发检查。

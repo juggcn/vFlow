@@ -22,13 +22,7 @@ data class WorkflowInspectorInsertRequest(
          * 按选择器点击：插入「UI选择器」+「点击」两步，点击的 target 用魔法变量
          * 引用前一步的 element。目标是没有任何 ID 可填的控件时用这个。
          */
-        CLICK_SELECTOR,
-
-        /**
-         * 插入录制好的整段步骤。具体步骤放在 InteractionRecorder 里，
-         * 广播只传一个标记——同进程直接取，不序列化 ActionStep 列表。
-         */
-        INSERT_RECORDED_STEPS
+        CLICK_SELECTOR
     }
 
     companion object {
@@ -44,11 +38,6 @@ data class WorkflowInspectorInsertRequest(
         fun clickSelector(selector: String) = WorkflowInspectorInsertRequest(
             type = Type.CLICK_SELECTOR,
             value = selector
-        )
-
-        fun recordedSteps(count: Int) = WorkflowInspectorInsertRequest(
-            type = Type.INSERT_RECORDED_STEPS,
-            value = count.toString()
         )
 
         fun uiSelector(selector: String) = WorkflowInspectorInsertRequest(

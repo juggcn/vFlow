@@ -468,6 +468,7 @@
     <string name="editor_toast_unknown_modules_removed">%d 不明なモジュールまたは廃止されたモジュールは自動的に削除されました。</string>
     <string name="editor_button_stop">停止</string>
     <string name="editor_toast_workflow_saved">ワークフローが保存されました</string>
+    <string name="editor_toast_draft_restored">未保存の下書きを復元しました</string>
     <string name="editor_dialog_overwrite_title">既存のステップを上書きしますか?</string>
     <string name="editor_dialog_overwrite_message">AI が新しいワークフロー ステップを生成します。現在のエディターのすべてのステップをクリアして、新しく生成されたコンテンツを適用しますか?</string>
     <string name="editor_button_overwrite">カバー</string>

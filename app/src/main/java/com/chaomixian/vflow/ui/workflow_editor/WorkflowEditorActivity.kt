@@ -104,6 +104,9 @@ class WorkflowEditorActivity : BaseActivity() {
 
     private var initialWorkflowJson: String? = null
 
+    /** 用户明确放弃改动/已保存时置位，阻止 onStop 把刚丢掉的内容又写回草稿 */
+    private var suppressDraftSave = false
+
     private var pendingExecutionWorkflow: Workflow? = null
     private lateinit var executionTracker: WorkflowEditorExecutionTracker
     private lateinit var magicVariableCatalogBuilder: WorkflowEditorMagicVariableCatalogBuilder
@@ -216,6 +219,7 @@ class WorkflowEditorActivity : BaseActivity() {
         setupRecyclerFocusDismiss()
         setupPickerHandler()
         restoreOrLoadEditorState(savedInstanceState)
+        restoreDraftIfNeeded(savedInstanceState)
         setupDragAndDrop()
         setupUndoControls()
         setupPrimaryActions()
@@ -683,6 +687,9 @@ class WorkflowEditorActivity : BaseActivity() {
                 saveWorkflow(true)
             }
             .setNegativeButton(R.string.dialog_unsaved_discard) { _, _ ->
+                // 用户主动放弃改动，草稿也得删，不然下次打开又被恢复回来
+                suppressDraftSave = true
+                EditorDraftStore.clear(this)
                 finish()
             }
             .setNeutralButton(R.string.common_cancel, null)
@@ -1578,10 +1585,55 @@ class WorkflowEditorActivity : BaseActivity() {
         maybePromptEnumMigration()
     }
 
+    override fun onStop() {
+        // 切后台前落一份草稿：退到桌面录屏、被系统回收时，未保存的改动不会跟着内存一起没
+        saveDraft()
+        super.onStop()
+    }
+
     override fun onDestroy() {
         inspectorInsertController.unregister()
         delayedExecuteHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
+    }
+
+    /** 只在确实有未保存改动时写草稿；已经保存过就顺手把旧草稿清掉 */
+    private fun saveDraft() {
+        if (suppressDraftSave) return
+        if (!hasUnsavedChanges()) {
+            EditorDraftStore.clear(this)
+            return
+        }
+        EditorDraftStore.save(
+            this,
+            EditorDraftStore.Draft(
+                workflowId = editingWorkflowId(),
+                name = nameEditText.text.toString(),
+                triggerSteps = triggerSteps.toList(),
+                actionSteps = actionSteps.toList()
+            )
+        )
+    }
+
+    /**
+     * 捡回上次没保存的草稿。
+     *
+     * 只在系统没提供恢复状态、且草稿的 workflowId 跟当前编辑的工作流一致时才恢复，
+     * 否则打开另一个工作流会把别人的未保存改动塞进来。
+     */
+    private fun restoreDraftIfNeeded(savedInstanceState: Bundle?) {
+        if (savedInstanceState != null) return
+        val draft = EditorDraftStore.load(this) ?: return
+        if (draft.isEmpty) return
+        if (draft.workflowId != editingWorkflowId()) return
+
+        nameEditText.setText(draft.name)
+        triggerSteps.clear()
+        triggerSteps.addAll(draft.triggerSteps)
+        actionSteps.clear()
+        actionSteps.addAll(draft.actionSteps)
+        recalculateAndNotify()
+        toast(R.string.editor_toast_draft_restored)
     }
 
     private fun showExecuteDelayedMenu() {
@@ -1937,7 +1989,10 @@ class WorkflowEditorActivity : BaseActivity() {
 
             toast(R.string.editor_toast_workflow_saved)
 
+            // 已经落盘，草稿没用了；直接 finish 时也要拦住 onStop 把它又写回来
+            EditorDraftStore.clear(this)
             if (shouldFinish) {
+                suppressDraftSave = true
                 finish()
             } else {
                 initialWorkflowJson = gson.toJson(workflowToSave)

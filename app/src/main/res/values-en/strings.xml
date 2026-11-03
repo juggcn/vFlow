@@ -493,6 +493,7 @@
     <string name="editor_toast_unknown_modules_removed">Automatically removed %d unknown or deprecated modules.</string>
     <string name="editor_button_stop">Stop</string>
     <string name="editor_toast_workflow_saved">Workflow saved</string>
+    <string name="editor_toast_draft_restored">Unsaved draft restored</string>
     <string name="editor_dialog_overwrite_title">Overwrite existing steps?</string>
     <string name="editor_dialog_overwrite_message">AI has generated new workflow steps. Do you want to clear all current steps in the editor and apply the newly generated content?</string>
     <string name="editor_button_overwrite">Overwrite</string>

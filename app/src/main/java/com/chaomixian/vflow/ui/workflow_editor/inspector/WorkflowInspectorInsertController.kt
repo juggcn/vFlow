@@ -13,7 +13,6 @@ import com.chaomixian.vflow.core.module.ActionModule
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.services.UiInspectorService
-import com.chaomixian.vflow.services.InteractionRecorder
 import java.util.UUID
 
 class WorkflowInspectorInsertController(
@@ -92,9 +91,6 @@ class WorkflowInspectorInsertController(
             }
             WorkflowInspectorInsertRequest.Type.CLICK_SELECTOR -> {
                 insertSelectorClick(request.value ?: "")
-            }
-            WorkflowInspectorInsertRequest.Type.INSERT_RECORDED_STEPS -> {
-                insertRecordedSteps()
             }
         }
 
@@ -196,26 +192,4 @@ class WorkflowInspectorInsertController(
         return true
     }
 
-    /** 插入录制好的整段步骤 */
-    private fun insertRecordedSteps(): Boolean {
-        val steps = InteractionRecorder.toActionSteps()
-        if (steps.isEmpty()) {
-            Toast.makeText(activity, R.string.editor_toast_recorded_steps_empty, Toast.LENGTH_SHORT).show()
-            return false
-        }
-
-        onBeforeStepsChanged()
-        actionSteps.addAll(steps)
-        onStepsChanged()
-        InteractionRecorder.clear()
-        recyclerView.post {
-            recyclerView.smoothScrollToPosition((recyclerView.adapter?.itemCount ?: 1) - 1)
-        }
-        Toast.makeText(
-            activity,
-            activity.getString(R.string.editor_toast_recorded_steps_inserted, steps.size),
-            Toast.LENGTH_SHORT
-        ).show()
-        return true
-    }
 }

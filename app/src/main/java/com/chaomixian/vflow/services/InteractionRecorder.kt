@@ -10,13 +10,18 @@
 
 package com.chaomixian.vflow.services
 
+import android.content.Context
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.chaomixian.vflow.core.inspect.SelectorCandidateBuilder
 import com.chaomixian.vflow.core.logging.DebugLogger
+import com.chaomixian.vflow.core.logging.LogManager
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.collectWindowRoots
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import java.io.File
 import java.util.UUID
 
 object InteractionRecorder {
@@ -31,6 +36,11 @@ object InteractionRecorder {
 
     /** 同一节点该间隔内的连续输入合并成一条 */
     private const val INPUT_MERGE_WINDOW_MS = 2000L
+
+    /** 待插入的录制结果。退到桌面录制时编辑器可能已经不在，必须落盘才不会丢 */
+    private const val PENDING_STEPS_FILE = "pending_recorded_steps.json"
+    private const val PREFS_NAME = "vflow_interaction_recorder"
+    private const val PREF_EDITING_WORKFLOW_ID = "editing_workflow_id"
 
     enum class Mode { IDLE, RECORD }
 
@@ -109,6 +119,67 @@ object InteractionRecorder {
 
     @Synchronized
     fun snapshot(): List<Captured> = captured.toList()
+
+    // region 录制结果暂存
+
+    /**
+     * 记住发起录制时正在编辑的工作流。
+     * 停止录制时编辑器可能已经不在前台，靠这个 id 把同一个工作流重新拉起来。
+     */
+    fun rememberEditingWorkflow(workflowId: String?) {
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREF_EDITING_WORKFLOW_ID, workflowId)
+            .apply()
+    }
+
+    fun rememberedEditingWorkflow(): String? {
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return null
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(PREF_EDITING_WORKFLOW_ID, null)
+    }
+
+    /** 把录制结果落盘。编辑器不在场时，数据留在这儿等它回来消费 */
+    fun savePendingSteps(steps: List<ActionStep>): Boolean {
+        if (steps.isEmpty()) return false
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return false
+        return runCatching {
+            File(context.filesDir, PENDING_STEPS_FILE).writeText(Gson().toJson(steps))
+            DebugLogger.d(TAG, "录制结果已暂存: ${steps.size} 步")
+            true
+        }.getOrDefault(false)
+    }
+
+    /** 取走暂存的录制结果，取完即删，避免重复插入 */
+    fun consumePendingSteps(): List<ActionStep> {
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return emptyList()
+        val file = File(context.filesDir, PENDING_STEPS_FILE)
+        if (!file.exists()) return emptyList()
+
+        val steps = runCatching {
+            val type = object : TypeToken<List<ActionStep>>() {}.type
+            Gson().fromJson<List<ActionStep>>(file.readText(), type) ?: emptyList()
+        }.getOrElse {
+            DebugLogger.e(TAG, "暂存录制结果解析失败", it)
+            emptyList()
+        }
+        file.delete()
+        return steps
+    }
+
+    /** 是否还有没被消费的录制结果 */
+    fun hasPendingSteps(): Boolean {
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return false
+        return File(context.filesDir, PENDING_STEPS_FILE).exists()
+    }
+
+    fun discardPendingSteps() {
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return
+        File(context.filesDir, PENDING_STEPS_FILE).delete()
+    }
+
+    // endregion
 
     // region 事件捕获
 
@@ -298,17 +369,26 @@ object InteractionRecorder {
 
             when (item.kind) {
                 Kind.CLICK -> {
-                    val target = item.selector ?: "${item.x},${item.y}"
-                    newStep("vflow.device.click", mapOf("target" to target))?.let { steps.add(it) }
+                    // 选择器是 GKD 语法，只有「UI选择器」模块认得；
+                    // 直接塞给点击模块会被当成视图 ID 去找，永远找不到
+                    if (item.selector != null) {
+                        appendSelectorClick(steps, item.selector)
+                    } else {
+                        newStep("vflow.device.click", mapOf("target" to "${item.x},${item.y}"))
+                            ?.let { steps.add(it) }
+                    }
                 }
 
                 Kind.INPUT -> {
                     if (item.text.isNotBlank()) {
                         // 输入前先点一下输入框保证焦点；录制时已经点过的就不重复点了
                         if (previousFingerprint != item.fingerprint) {
-                            val target = item.selector ?: "${item.x},${item.y}"
-                            newStep("vflow.device.click", mapOf("target" to target))
-                                ?.let { steps.add(it) }
+                            if (item.selector != null) {
+                                appendSelectorClick(steps, item.selector)
+                            } else {
+                                newStep("vflow.device.click", mapOf("target" to "${item.x},${item.y}"))
+                                    ?.let { steps.add(it) }
+                            }
                         }
                         newStep("vflow.interaction.input_text", mapOf("text" to item.text))
                             ?.let { steps.add(it) }
@@ -322,6 +402,22 @@ object InteractionRecorder {
 
         DebugLogger.d(TAG, "由 ${items.size} 条记录生成 ${steps.size} 个步骤")
         return steps
+    }
+
+    /**
+     * 有选择器时生成「UI选择器 + 点击」两步。
+     *
+     * 点击模块的 target 只认坐标和视图 ID，不认 GKD 选择器表达式，
+     * 所以要先让 UI选择器模块把节点找出来，再用魔法变量把它的 element 输出接到点击上。
+     */
+    private fun appendSelectorClick(steps: MutableList<ActionStep>, selector: String) {
+        val findStep = newStep(
+            "vflow.interaction.ui_selector",
+            mapOf("selector" to selector)
+        ) ?: return
+        steps.add(findStep)
+        newStep("vflow.device.click", mapOf("target" to "{{${findStep.id}.element}}"))
+            ?.let { steps.add(it) }
     }
 
     /** 用模块默认参数建步骤再覆盖，避免漏字段；id 必须新生成 */
