@@ -39,6 +39,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.execution.ExecutionStateBus
 import com.chaomixian.vflow.core.execution.WorkflowExecutor
+import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.module.*
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.parser.NamedVariableReferenceRewriter
@@ -1623,17 +1624,23 @@ class WorkflowEditorActivity : BaseActivity() {
      */
     private fun restoreDraftIfNeeded(savedInstanceState: Bundle?) {
         if (savedInstanceState != null) return
-        val draft = EditorDraftStore.load(this) ?: return
+        // 草稿只是"锦上添花"，任何异常都不该把编辑器带崩，出了问题就当没有草稿
+        val draft = runCatching { EditorDraftStore.load(this) }.getOrNull() ?: return
         if (draft.isEmpty) return
         if (draft.workflowId != editingWorkflowId()) return
 
-        nameEditText.setText(draft.name)
-        triggerSteps.clear()
-        triggerSteps.addAll(draft.triggerSteps)
-        actionSteps.clear()
-        actionSteps.addAll(draft.actionSteps)
-        recalculateAndNotify()
-        toast(R.string.editor_toast_draft_restored)
+        runCatching {
+            nameEditText.setText(draft.name)
+            triggerSteps.clear()
+            triggerSteps.addAll(draft.triggerSteps)
+            actionSteps.clear()
+            actionSteps.addAll(draft.actionSteps)
+            recalculateAndNotify()
+            toast(R.string.editor_toast_draft_restored)
+        }.onFailure {
+            DebugLogger.e("WorkflowEditor", "草稿恢复失败，已丢弃", it)
+            EditorDraftStore.clear(this)
+        }
     }
 
     private fun showExecuteDelayedMenu() {
