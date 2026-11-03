@@ -21,6 +21,7 @@ import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.core.workflow.module.triggers.handlers.collectWindowRoots
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.services.AccessibilityService as VFlowAccessibilityService
+import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import kotlinx.coroutines.delay
 
 /**
@@ -37,6 +38,10 @@ class WaitUiStableModule : BaseModule() {
 
         /** 指纹计算时最多遍历的节点数，防止异常页面卡住 */
         private const val MAX_WALK_NODES = 2000
+
+        private const val INPUT_STABLE_MS = "stable_ms"
+        private const val INPUT_TIMEOUT_MS = "timeout_ms"
+        private const val INPUT_POLL_MS = "poll_ms"
     }
 
     override val id = "vflow.ui.wait_stable"
@@ -59,24 +64,24 @@ class WaitUiStableModule : BaseModule() {
 
     override fun getInputs(): List<InputDefinition> = listOf(
         InputDefinition(
-            "stable_ms",
-            "稳定时长(ms)",
+            INPUT_STABLE_MS,
+            "稳定时长(毫秒)",
             ParameterType.NUMBER,
             500,
             acceptsMagicVariable = true,
             hint = "界面连续这么久没有变化就算稳定"
         ),
         InputDefinition(
-            "timeout_ms",
-            "超时(ms)",
+            INPUT_TIMEOUT_MS,
+            "超时(毫秒)",
             ParameterType.NUMBER,
             5000,
             acceptsMagicVariable = true,
             hint = "超时后直接返回，输出 stable=false"
         ),
         InputDefinition(
-            "poll_ms",
-            "轮询间隔(ms)",
+            INPUT_POLL_MS,
+            "轮询间隔(毫秒)",
             ParameterType.NUMBER,
             150,
             acceptsMagicVariable = false,
@@ -86,7 +91,7 @@ class WaitUiStableModule : BaseModule() {
 
     override fun getOutputs(step: ActionStep?): List<OutputDefinition> = listOf(
         OutputDefinition(OUTPUT_STABLE, "是否稳定", VTypeRegistry.BOOLEAN.id),
-        OutputDefinition(OUTPUT_ELAPSED_MS, "耗时(ms)", VTypeRegistry.NUMBER.id)
+        OutputDefinition(OUTPUT_ELAPSED_MS, "耗时(毫秒)", VTypeRegistry.NUMBER.id)
     )
 
     override suspend fun execute(
@@ -96,9 +101,9 @@ class WaitUiStableModule : BaseModule() {
         val service = context.services.get(VFlowAccessibilityService::class)
             ?: return ExecutionResult.Failure("等待失败", "无障碍服务未启动")
 
-        val stableMs = (context.getVariableAsInt("stable_ms") ?: 500).toLong().coerceAtLeast(50L)
-        val timeoutMs = (context.getVariableAsInt("timeout_ms") ?: 5000).toLong().coerceAtLeast(stableMs)
-        val pollMs = (context.getVariableAsInt("poll_ms") ?: 150).toLong().coerceAtLeast(50L)
+        val stableMs = (context.getVariableAsInt(INPUT_STABLE_MS) ?: 500).toLong().coerceAtLeast(50L)
+        val timeoutMs = (context.getVariableAsInt(INPUT_TIMEOUT_MS) ?: 5000).toLong().coerceAtLeast(stableMs)
+        val pollMs = (context.getVariableAsInt(INPUT_POLL_MS) ?: 150).toLong().coerceAtLeast(50L)
 
         val start = System.currentTimeMillis()
         var lastSignature: Int? = null
@@ -123,7 +128,7 @@ class WaitUiStableModule : BaseModule() {
         }
 
         val elapsed = System.currentTimeMillis() - start
-        onProgress(ProgressUpdate(if (stable) "界面已稳定，用时 ${elapsed}ms" else "等待超时，用时 ${elapsed}ms"))
+        onProgress(ProgressUpdate(if (stable) "界面已稳定，用时 ${elapsed} 毫秒" else "等待超时，用时 ${elapsed} 毫秒"))
 
         return ExecutionResult.Success(
             mapOf(
@@ -139,7 +144,22 @@ class WaitUiStableModule : BaseModule() {
     override fun createSteps(): List<ActionStep> =
         listOf(ActionStep(moduleId = this.id, parameters = emptyMap()))
 
-    override fun getSummary(context: Context, step: ActionStep): CharSequence = "等待界面稳定"
+    /** 卡片外侧摘要：直接带出稳定时长与超时两个参数，不用点开才知道设了多少 */
+    override fun getSummary(context: Context, step: ActionStep): CharSequence {
+        val inputs = getInputs()
+        fun pillOf(id: String) = PillUtil.createPillFromParam(
+            step.parameters[id],
+            inputs.find { it.id == id }
+        )
+        return PillUtil.buildSpannable(
+            context,
+            "稳定 ",
+            pillOf(INPUT_STABLE_MS),
+            " 毫秒 · 超时 ",
+            pillOf(INPUT_TIMEOUT_MS),
+            " 毫秒"
+        )
+    }
 
     /** 给当前所有窗口的节点树算指纹：节点数 + 文本与类名的哈希，任一变化都会让指纹变化 */
     private fun signatureOf(service: VFlowAccessibilityService): Int {

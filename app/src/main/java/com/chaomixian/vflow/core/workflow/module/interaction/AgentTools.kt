@@ -662,6 +662,13 @@ class AgentTools(private val context: ExecutionContext) {
     }
 
     suspend fun pressKey(action: String): String {
+        // 拉下通知栏：用下滑模拟，比 GLOBAL_ACTION_NOTIFICATIONS（API 31+）兼容性好
+        if (action.equals("notifications", ignoreCase = true)) {
+            val (width, height) = targetScreenSize()
+            swipe(width / 2, 1, width / 2, (height * 0.75).toInt(), 250)
+            return "Success: 已拉下通知栏。"
+        }
+
         // 虚拟屏幕按键
         if (targetDisplayId > 0 && ShellManager.isShizukuActive(appContext)) {
             val keyCode = when(action.lowercase()) {
@@ -721,5 +728,109 @@ class AgentTools(private val context: ExecutionContext) {
         }
 
         return "Failed: Could not swipe (Accessibility & Shell both failed)."
+    }
+
+    // ---------------- 以下为模型侧增强工具 ----------------
+
+    /** 在无障碍树里按文本 / ID / 模糊匹配找节点 */
+    private fun findNode(target: String): AccessibilityNodeInfo? {
+        if (target.isBlank()) return null
+        val service = ServiceStateBus.getAccessibilityService() ?: return null
+        val root = if (targetDisplayId > 0) {
+            service.windows.find { it.displayId == targetDisplayId }?.root
+        } else {
+            service.rootInActiveWindow
+        } ?: return null
+
+        root.findAccessibilityNodeInfosByText(target)?.firstOrNull { it.isVisibleToUser }?.let { return it }
+        root.findAccessibilityNodeInfosByViewId(target)?.firstOrNull { it.isVisibleToUser }?.let { return it }
+
+        val cleanTarget = normalizeText(target)
+        val fuzzy = findBestNodeFuzzy(root, cleanTarget)
+        return if (fuzzy != null && calculateMatchScore(fuzzy, cleanTarget) < 40) fuzzy else null
+    }
+
+    private fun nodeLabel(node: AccessibilityNodeInfo): String {
+        val text = node.text?.toString()?.takeIf { it.isNotBlank() }
+        val desc = node.contentDescription?.toString()?.takeIf { it.isNotBlank() }
+        val id = node.viewIdResourceName?.substringAfter(":id/")?.takeIf { it.isNotBlank() }
+        return (text ?: desc ?: id ?: "节点").replace("\n", " ").take(40)
+    }
+
+    /**
+     * 按 UI 树里的编号点击。编号来自本帧的 dumpUi，模型不需要自己算坐标。
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    suspend fun clickNode(index: Int): String {
+        val nodes = AgentUtils.collectVisibleNodes(appContext, targetDisplayId)
+        if (nodes.isEmpty()) return "Failed: 当前没有可用的 UI 节点（无障碍未运行或界面无内容）。"
+        val node = nodes.getOrNull(index)
+            ?: return "Failed: 节点编号 $index 不存在，当前共 ${nodes.size} 个节点。请看最新的 UI 树重新选。"
+        val label = "[$index] ${nodeLabel(node)}"
+        return if (targetDisplayId == 0) {
+            clickAccessibilityNode(node, label)
+        } else {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (clickCoordinates(rect.centerX(), rect.centerY())) "Success: 已点击 $label。" else "Failed: 点击 $label 失败。"
+        }
+    }
+
+    /** 长按某个元素，用于菜单、删除、拖拽前的选择 */
+    suspend fun longPressElement(target: String, durationMs: Long = 1000): String {
+        val node = findNode(target) ?: return "Failed: 未找到 '$target'。"
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val result = longPress(rect.centerX(), rect.centerY(), durationMs)
+        return if (result.startsWith("Failed")) "Failed: 长按 '$target' 失败。" else "Success: 已长按 '$target'。"
+    }
+
+    /** 在某个元素区域内滑动，用于滑块、横向轮播、局部列表 */
+    suspend fun swipeElement(target: String, direction: String): String {
+        val node = findNode(target) ?: return "Failed: 未找到 '$target'。"
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val cx = rect.centerX()
+        val cy = rect.centerY()
+        val halfW = (rect.width() / 4).coerceAtLeast(1)
+        val halfH = (rect.height() / 4).coerceAtLeast(1)
+
+        val (startX, startY, endX, endY) = when (direction.lowercase()) {
+            "up" -> listOf(cx, cy + halfH, cx, cy - halfH)
+            "down" -> listOf(cx, cy - halfH, cx, cy + halfH)
+            "left" -> listOf(cx + halfW, cy, cx - halfW, cy)
+            "right" -> listOf(cx - halfW, cy, cx + halfW, cy)
+            else -> return "Failed: direction 只能是 up / down / left / right。"
+        }
+        swipe(startX, startY, endX, endY, 300)
+        return "Success: 已在 '$target' 区域内向 $direction 滑动。"
+    }
+
+    /** 一次性取当前屏的全部文本，避免为了读文案反复截图 */
+    @RequiresApi(Build.VERSION_CODES.R)
+    fun getPageText(): String {
+        val nodes = AgentUtils.collectVisibleNodes(appContext, targetDisplayId)
+        val texts = nodes.mapNotNull { node ->
+            node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+                ?: node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        }.distinct()
+        if (texts.isEmpty()) return "当前页面没有可读文本。"
+        val joined = texts.joinToString("\n")
+        return if (joined.length > 4000) joined.take(4000) + "\n...(已截断)" else joined
+    }
+
+    /** 连续滚动直到找到目标，省掉模型自己滚好几次 */
+    suspend fun scrollUntil(target: String, direction: String, maxSwipes: Int): String {
+        val times = maxSwipes.coerceIn(1, 12)
+        repeat(times) { i ->
+            findNode(target)?.let { node ->
+                val rect = Rect()
+                node.getBoundsInScreen(rect)
+                return "Success: 滚动 ${i + 1} 次后找到 '$target'，bounds=[${rect.left},${rect.top}][${rect.right},${rect.bottom}]。请再调用 click_element 或 click_point 完成点击。"
+            }
+            scroll(direction)
+            delay(400)
+        }
+        return "Failed: 连续滚动 $times 次仍未找到 '$target'。"
     }
 }

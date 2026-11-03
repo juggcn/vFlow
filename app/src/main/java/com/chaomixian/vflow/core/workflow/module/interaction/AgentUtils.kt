@@ -13,6 +13,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.app.usage.UsageStatsManager
 import android.os.Build
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.annotation.RequiresApi
 import com.chaomixian.vflow.core.logging.DebugLogger
@@ -24,6 +25,7 @@ import com.chaomixian.vflow.core.utils.VirtualDisplayManager
 import com.chaomixian.vflow.permissions.PermissionManager
 import com.chaomixian.vflow.services.ServiceStateBus
 import com.chaomixian.vflow.services.ShellManager
+import kotlinx.coroutines.delay
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Calendar
@@ -34,6 +36,16 @@ import java.util.Calendar
 object AgentUtils {
 
     private const val TAG = "AgentUtils"
+
+    /** 发给视觉模型的截图长边上限。多数模型内部会缩到 1280~1568，传原图纯浪费带宽和 token */
+    private const val MAX_IMAGE_LONG_SIDE = 1280
+    private const val IMAGE_JPEG_QUALITY = 85
+
+    /** 一次 UI 树最多回报的节点数，避免超长文本被字符数盲截 */
+    private const val MAX_TREE_NODES = 240
+
+    /** 截图缓存文件保留数量，长任务不清理会堆几十张 */
+    private const val KEEP_SCREENSHOT_FILES = 8
 
     data class ScreenshotResult(
         val base64: String?,
@@ -99,14 +111,29 @@ object AgentUtils {
         val timestamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss_SSS", java.util.Locale.getDefault()).format(java.util.Date())
         val file = File(workDir, "${prefix}_$timestamp.jpg")
         val output = ByteArrayOutputStream()
+        var scaled: Bitmap? = null
         return try {
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+            // 虚拟屏同样是长边限 1280，不然 1080p 帧直接进模型太浪费
+            val longSide = maxOf(bitmap.width, bitmap.height)
+            val target = if (longSide > MAX_IMAGE_LONG_SIDE) {
+                val ratio = MAX_IMAGE_LONG_SIDE.toFloat() / longSide
+                Bitmap.createScaledBitmap(
+                    bitmap,
+                    maxOf(1, (bitmap.width * ratio).toInt()),
+                    maxOf(1, (bitmap.height * ratio).toInt()),
+                    true
+                ).also { scaled = it }
+            } else {
+                bitmap
+            }
+            target.compress(Bitmap.CompressFormat.JPEG, IMAGE_JPEG_QUALITY, output)
             val bytes = output.toByteArray()
             file.outputStream().use { it.write(bytes) }
             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-            ScreenshotResult(base64, Uri.fromFile(file).toString(), bitmap.width, bitmap.height)
+            ScreenshotResult(base64, Uri.fromFile(file).toString(), target.width, target.height)
         } finally {
-            bitmap.recycle()
+            scaled?.let { if (!it.isRecycled) it.recycle() }
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
     }
 
@@ -146,101 +173,311 @@ object AgentUtils {
      * 增加 displayId 参数以支持多屏幕。
      */
     @RequiresApi(Build.VERSION_CODES.R)
-    fun dumpHierarchy(context: Context, displayId: Int = 0): String {
-        val service = ServiceStateBus.getAccessibilityService()
+    fun dumpHierarchy(context: Context, displayId: Int = 0): String = dumpUi(context, displayId).text
 
-        // 尝试根据 displayId 获取对应的根节点
-        val root = if (displayId > 0) {
-            service?.windows?.find { it.displayId == displayId }?.root
-        } else {
-            service?.rootInActiveWindow
+    data class UiDump(
+        val text: String,
+        val nodes: List<AccessibilityNodeInfo>,
+        val truncated: Boolean
+    )
+
+    /**
+     * 抓取 UI 树，同时给出「节点编号 → 节点」的对应关系，供 click_node 使用。
+     *
+     * 原来按 take(16000) 字符盲截，经常切在节点中间；这里改成按节点数截断，
+     * 并且给每个节点编上号，模型只需要报编号，不用做坐标算术。
+     */
+    @RequiresApi(Build.VERSION_CODES.R)
+    fun dumpUi(context: Context, displayId: Int = 0): UiDump {
+        val root = rootFor(displayId)
+            ?: return UiDump("UI Hierarchy unavailable (Service not running or window not found)", emptyList(), false)
+        val screenBounds = screenBoundsOf(context)
+
+        val nodes = ArrayList<AccessibilityNodeInfo>()
+        val sb = StringBuilder()
+        var truncated = false
+
+        fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            if (truncated) return
+            if (nodes.size >= MAX_TREE_NODES) {
+                truncated = true
+                return
+            }
+            if (!node.isVisibleToUser) return
+
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (!Rect.intersects(rect, screenBounds)) return
+            if (rect.width() < 1 || rect.height() < 1) return
+
+            val text = node.text?.toString()
+            val desc = node.contentDescription?.toString()
+            val viewId = node.viewIdResourceName
+            val isClickable = node.isClickable
+            val isEditable = node.isEditable
+            val isScrollable = node.isScrollable
+
+            val hasContent = !text.isNullOrBlank() || !desc.isNullOrBlank()
+            val isInteractive = isClickable || isEditable || isScrollable
+            val hasId = !viewId.isNullOrBlank()
+
+            if (hasContent || isInteractive || hasId) {
+                val index = nodes.size
+                nodes.add(node)
+                val className = node.className?.toString()?.substringAfterLast('.') ?: "View"
+                sb.append("  ".repeat(depth)).append("[").append(index).append("] <").append(className)
+                if (!text.isNullOrBlank()) sb.append(" text=\"${text.replace("\n", " ").replace("\"", "'")}\"")
+                if (!desc.isNullOrBlank()) sb.append(" desc=\"${desc.replace("\n", " ").replace("\"", "'")}\"")
+                if (hasId) sb.append(" id=\"${viewId!!.substringAfter(":id/")}\"")
+                if (isClickable) sb.append(" clickable=\"true\"")
+                if (isEditable) sb.append(" editable=\"true\"")
+                if (isScrollable) sb.append(" scrollable=\"true\"")
+
+                val visibleRect = Rect(rect)
+                visibleRect.intersect(screenBounds)
+                sb.append(" bounds=\"[${visibleRect.left},${visibleRect.top}][${visibleRect.right},${visibleRect.bottom}]\"")
+                sb.append(" />\n")
+            }
+
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { visit(it, depth + 1) }
+            }
         }
 
-        if (root == null) return "UI Hierarchy unavailable (Service not running or window not found)"
-
-        // 仅供参考的屏幕尺寸（如果是虚拟屏幕，可能需要从别处获取，暂使用默认显示器尺寸）
-        val metrics = DisplayMetrics()
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        wm.defaultDisplay.getRealMetrics(metrics)
-        val screenBounds = Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
-
-        val sb = StringBuilder()
         try {
-            dumpNode(root, sb, 0, screenBounds)
+            visit(root, 0)
         } catch (e: Exception) {
             sb.append("Error dumping hierarchy: ${e.message}")
         }
-        return sb.toString()
+        return UiDump(sb.toString(), nodes, truncated)
     }
 
-    private fun dumpNode(node: AccessibilityNodeInfo, sb: StringBuilder, depth: Int, screenBounds: Rect) {
-        if (!node.isVisibleToUser) return
+    /** 按 dumpUi 的同一顺序重新收集节点，用于按编号点击（编号只在同一帧内有效） */
+    @RequiresApi(Build.VERSION_CODES.R)
+    fun collectVisibleNodes(context: Context, displayId: Int = 0): List<AccessibilityNodeInfo> {
+        return dumpUi(context, displayId).nodes
+    }
 
-        // 几何过滤：获取节点在屏幕上的绝对坐标
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
+    /** 当前前台应用，模型需要知道自己在哪个 App 里 */
+    fun getForegroundApp(context: Context): String {
+        val service = ServiceStateBus.getAccessibilityService() ?: return "unknown"
+        val pkg = runCatching { service.rootInActiveWindow?.packageName?.toString() }.getOrNull()
+        if (pkg.isNullOrBlank()) return "unknown"
+        val label = runCatching {
+            val pm = context.packageManager
+            pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+        }.getOrDefault("")
+        return if (label.isBlank() || label == pkg) pkg else "$label ($pkg)"
+    }
 
-        if (!Rect.intersects(rect, screenBounds)) return
-        // 稍微放宽最小尺寸限制，防止遗漏小按钮
-        if (rect.width() < 1 || rect.height() < 1) return
+    /**
+     * 计算截图指纹（灰度均值哈希），用于判断动作前后画面有没有变化。
+     * 返回 null 表示无法计算。
+     */
+    fun screenshotFingerprint(base64: String?): Long? {
+        if (base64.isNullOrBlank()) return null
+        return try {
+            val bytes = Base64.decode(base64, Base64.NO_WRAP)
+            val options = BitmapFactory.Options().apply { inSampleSize = 8 }
+            val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+            val small = Bitmap.createScaledBitmap(bitmap, 8, 8, true)
+            if (small !== bitmap) bitmap.recycle()
 
-        val text = node.text?.toString()
-        val desc = node.contentDescription?.toString()
-        val viewId = node.viewIdResourceName
-        val isClickable = node.isClickable
-        val isEditable = node.isEditable
-        val isScrollable = node.isScrollable
+            val pixels = IntArray(64)
+            small.getPixels(pixels, 0, 8, 0, 0, 8, 8)
+            small.recycle()
 
-        val hasContent = !text.isNullOrBlank() || !desc.isNullOrBlank()
-        val isInteractive = isClickable || isEditable || isScrollable
-        val hasId = !viewId.isNullOrBlank()
-
-        if (hasContent || isInteractive || hasId) {
-            val indent = "  ".repeat(depth)
-            val className = node.className?.toString()?.substringAfterLast('.') ?: "View"
-            sb.append(indent).append("<").append(className)
-            if (!text.isNullOrBlank()) sb.append(" text=\"${text.replace("\n", " ").replace("\"", "'")}\"")
-            if (!desc.isNullOrBlank()) sb.append(" desc=\"${desc.replace("\n", " ").replace("\"", "'")}\"")
-            if (hasId) sb.append(" id=\"${viewId!!.substringAfter(":id/")}\"")
-            if (isClickable) sb.append(" clickable=\"true\"")
-            if (isEditable) sb.append(" editable=\"true\"")
-            if (isScrollable) sb.append(" scrollable=\"true\"")
-
-            // 记录可见区域坐标
-            val visibleRect = Rect(rect)
-            visibleRect.intersect(screenBounds)
-            sb.append(" bounds=\"[${visibleRect.left},${visibleRect.top}][${visibleRect.right},${visibleRect.bottom}]\"")
-            sb.append(" />\n")
+            val grays = IntArray(64) { i ->
+                val px = pixels[i]
+                val r = (px shr 16) and 0xFF
+                val g = (px shr 8) and 0xFF
+                val b = px and 0xFF
+                (r * 299 + g * 587 + b * 114) / 1000
+            }
+            val avg = grays.average()
+            var hash = 0L
+            grays.forEach { gray -> hash = (hash shl 1) or (if (gray > avg) 1L else 0L) }
+            hash
+        } catch (e: Exception) {
+            DebugLogger.w(TAG, "计算截图指纹失败: ${e.message}")
+            null
         }
+    }
 
-        for (i in 0 until node.childCount) {
-            node.getChild(i)?.let { dumpNode(it, sb, depth + 1, screenBounds) }
+    /**
+     * 计算结果：界面有没有动、实际等了多久、是不是被硬超时截断的。
+     */
+    data class UiStableResult(
+        val changed: Boolean,
+        val waitedMs: Long,
+        val timedOut: Boolean
+    )
+
+    /**
+     * 等待界面稳定（事件驱动，仅主屏有效）。
+     *
+     * 判定分两段：
+     * 1. 动作发出后先等第一次内容变化，最多 [initialGraceMs]。一次都没等到就说明这个动作
+     *    压根没引起界面刷新（点击没生效），直接返回 changed=false。
+     * 2. 等到变化之后，每次事件都重置计时，静默满 [quietMs] 认为稳定。
+     *    整体最多等 [timeoutMs]：视频播放、进度条、倒计时这类页面永远等不到静默，
+     *    没有硬超时就会卡死。
+     *
+     * 虚拟屏没有无障碍事件流，调用方应改为固定延时。
+     */
+    suspend fun awaitUiStable(
+        quietMs: Long = 300L,
+        timeoutMs: Long = 2000L,
+        initialGraceMs: Long = 350L
+    ): UiStableResult {
+        val start = SystemClock.elapsedRealtime()
+        // 锚定到发起时刻：只看「这之后」的新事件，历史时间戳不算数
+        var lastChange = start
+        var sawChange = false
+
+        while (true) {
+            val now = SystemClock.elapsedRealtime()
+            val busChangeAt = ServiceStateBus.lastContentChangeAt
+            if (busChangeAt > lastChange) {
+                lastChange = busChangeAt
+                sawChange = true
+            }
+
+            val elapsed = now - start
+            if (elapsed >= timeoutMs) {
+                return UiStableResult(changed = sawChange, waitedMs = elapsed, timedOut = true)
+            }
+            if (!sawChange && elapsed >= initialGraceMs) {
+                return UiStableResult(changed = false, waitedMs = elapsed, timedOut = false)
+            }
+            if (sawChange && now - lastChange >= quietMs) {
+                return UiStableResult(changed = true, waitedMs = elapsed, timedOut = false)
+            }
+            delay(50L)
+        }
+    }
+
+    /**
+     * 等待界面稳定（虚拟屏，靠 ImageReader 的帧信号驱动）。
+     *
+     * 虚拟屏拿不到无障碍事件流，改用「有没有新帧」代替「有没有内容变化事件」，
+     * 两段判定与 [awaitUiStable] 一致：
+     * 1. 动作发出后先等第一帧新画面，最多 [initialGraceMs]。一次都没等到说明动作没生效。
+     * 2. 之后每来一帧就重置计时，连续 [quietMs] 没有新帧认为界面稳定。
+     * 整体最多等 [timeoutMs]：视频、进度条这类持续刷新的页面永远等不到静默。
+     *
+     * 与主屏相比首帧宽容度更大：帧要等整屏合成完才产生，不像无障碍事件是控件级即时上报。
+     * 探测到的帧会缓存在 [VirtualDisplayManager] 里，随后的截图直接复用，不会重复消费。
+     */
+    suspend fun awaitVirtualUiStable(
+        quietMs: Long = 300L,
+        timeoutMs: Long = 2000L,
+        initialGraceMs: Long = 450L,
+        pollMs: Long = 150L
+    ): UiStableResult {
+        val start = SystemClock.elapsedRealtime()
+        var lastFrameAt = start
+        var sawFrame = false
+
+        while (true) {
+            if (VirtualDisplayManager.peekFrameTimestamp() != null) {
+                lastFrameAt = SystemClock.elapsedRealtime()
+                sawFrame = true
+            }
+
+            val now = SystemClock.elapsedRealtime()
+            val elapsed = now - start
+            if (elapsed >= timeoutMs) {
+                return UiStableResult(changed = sawFrame, waitedMs = elapsed, timedOut = true)
+            }
+            if (!sawFrame && elapsed >= initialGraceMs) {
+                return UiStableResult(changed = false, waitedMs = elapsed, timedOut = false)
+            }
+            if (sawFrame && now - lastFrameAt >= quietMs) {
+                return UiStableResult(changed = true, waitedMs = elapsed, timedOut = false)
+            }
+            delay(pollMs)
+        }
+    }
+
+    /** 清理历史截图，只保留最近几张 */
+    fun cleanupScreenshots(workDir: File) {
+        runCatching {
+            val files = workDir.listFiles { file ->
+                file.isFile && (file.name.endsWith(".jpg") || file.name.endsWith(".png"))
+            } ?: return
+            if (files.size <= KEEP_SCREENSHOT_FILES) return
+            files.sortedByDescending { it.lastModified() }
+                .drop(KEEP_SCREENSHOT_FILES)
+                .forEach { it.delete() }
+        }
+    }
+
+    private fun screenBoundsOf(context: Context): Rect {
+        val metrics = DisplayMetrics()
+        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        wm.defaultDisplay.getRealMetrics(metrics)
+        return Rect(0, 0, metrics.widthPixels, metrics.heightPixels)
+    }
+
+    private fun rootFor(displayId: Int): AccessibilityNodeInfo? {
+        val service = ServiceStateBus.getAccessibilityService() ?: return null
+        return if (displayId > 0) {
+            service.windows.find { it.displayId == displayId }?.root
+        } else {
+            service.rootInActiveWindow
         }
     }
 
     private fun imageUriToBase64(context: Context, uri: Uri): Triple<String?, Int, Int> {
         return try {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                // 直接解码原图，不使用 inSampleSize 进行缩放
-                val bitmap = BitmapFactory.decodeStream(input) ?: return Triple(null, 0, 0)
+            val bitmap = decodeDownsampled(context, uri) ?: return Triple(null, 0, 0)
 
-                val output = ByteArrayOutputStream()
-                // 使用较高质量的 JPEG 压缩，确保文字清晰
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
+            val output = ByteArrayOutputStream()
+            // 长边已经限到 1280，质量 85 足够看清文字，体积比原图小一大半
+            bitmap.compress(Bitmap.CompressFormat.JPEG, IMAGE_JPEG_QUALITY, output)
 
-                val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
-                val width = bitmap.width
-                val height = bitmap.height
+            val base64 = Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+            val width = bitmap.width
+            val height = bitmap.height
 
-                // 立即回收 Bitmap，释放内存
-                bitmap.recycle()
+            // 立即回收 Bitmap，释放内存
+            bitmap.recycle()
 
-                Triple(base64, width, height)
-            } ?: Triple(null, 0, 0)
+            Triple(base64, width, height)
         } catch (e: Exception) {
             DebugLogger.e(TAG, "图片处理失败", e)
             Triple(null, 0, 0)
         }
+    }
+
+    /** 按长边限制解码，避免把 2K / 4K 原图直接塞给模型 */
+    private fun decodeDownsampled(context: Context, uri: Uri): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_IMAGE_LONG_SIDE) {
+            sample *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        val raw = context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, options)
+        } ?: return null
+
+        val longSide = maxOf(raw.width, raw.height)
+        if (longSide <= MAX_IMAGE_LONG_SIDE) return raw
+
+        val scale = MAX_IMAGE_LONG_SIDE.toFloat() / longSide
+        val scaled = Bitmap.createScaledBitmap(
+            raw,
+            maxOf(1, (raw.width * scale).toInt()),
+            maxOf(1, (raw.height * scale).toInt()),
+            true
+        )
+        if (scaled !== raw) raw.recycle()
+        return scaled
     }
 
     // 获取最近 30 天使用过的应用列表，按时长排序

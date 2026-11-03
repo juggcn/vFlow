@@ -18,6 +18,7 @@ import com.chaomixian.vflow.core.utils.VirtualDisplayManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
+import com.chaomixian.vflow.services.ServiceStateBus
 import com.chaomixian.vflow.services.ShellManager
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.chaomixian.vflow.ui.overlay.AgentOverlayManager
@@ -78,6 +79,13 @@ class AgentModule : BaseModule() {
     companion object {
         private const val DISPLAY_MODE_MAIN = "main_screen"
         private const val DISPLAY_MODE_VIRTUAL = "virtual_screen"
+
+        /** 最后的兜底延时：主屏无障碍没连、虚拟屏会话又不在内存里时，拿不到任何信号，只能固定等 */
+        private const val ACTION_SETTLE_MS = 700L
+        /** 界面内容静默多久算稳定 */
+        private const val UI_QUIET_MS = 300L
+        /** 等待稳定的硬超时：视频、进度条一类页面永远静默不下来 */
+        private const val UI_STABLE_TIMEOUT_MS = 2000L
     }
 
     override val id = "vflow.ai.agent"
@@ -179,11 +187,16 @@ class AgentModule : BaseModule() {
     // 定义工具 Schema
     private fun getNativeToolsSchema(): JSONArray {
         val schema = JSONArray()
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_point", "description": "Tap at specific NORMALIZED coordinates (0-1000). x=0 is left, x=1000 is right. y=0 is top, y=1000 is bottom.", "parameters": { "type": "object", "properties": { "x": { "type": "integer", "description": "Normalized X coordinate (0-1000)" }, "y": { "type": "integer", "description": "Normalized Y coordinate (0-1000)" } }, "required": ["x", "y"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_element", "description": "Click an element by exact text. Only use this if visual coordinates are impossible to determine.", "parameters": { "type": "object", "properties": { "target": { "type": "string", "description": "Exact text or ID." } }, "required": ["target"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_node", "description": "PREFERRED WAY TO TAP. Click the UI node by the number in square brackets from the UI Hierarchy, e.g. [12] -> click_node(12). More reliable than guessing coordinates.", "parameters": { "type": "object", "properties": { "index": { "type": "integer", "description": "Node index shown as [n] in the UI Hierarchy" } }, "required": ["index"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_element", "description": "Click an element by its exact text or view id. Use when the node has clear text in the UI Hierarchy.", "parameters": { "type": "object", "properties": { "target": { "type": "string", "description": "Exact text or ID." } }, "required": ["target"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "click_point", "description": "Tap at specific NORMALIZED coordinates (0-1000). x=0 is left, x=1000 is right. y=0 is top, y=1000 is bottom. Only use when the target has no text, id, or node index.", "parameters": { "type": "object", "properties": { "x": { "type": "integer", "description": "Normalized X coordinate (0-1000)" }, "y": { "type": "integer", "description": "Normalized Y coordinate (0-1000)" } }, "required": ["x", "y"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "long_press_element", "description": "Long press an element by text or id. Use for context menus, delete confirmation, or entering multi-select mode.", "parameters": { "type": "object", "properties": { "target": { "type": "string", "description": "Exact text or ID." }, "duration_ms": { "type": "integer", "description": "Press duration in milliseconds, default 1000" } }, "required": ["target"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "swipe_element", "description": "Swipe INSIDE a specific element, e.g. a slider, a banner carousel, or a horizontally scrolling row.", "parameters": { "type": "object", "properties": { "target": { "type": "string", "description": "Text or ID of the container element" }, "direction": { "type": "string", "enum": ["up", "down", "left", "right"] } }, "required": ["target", "direction"] } } }"""))
         schema.put(JSONObject("""{ "type": "function", "function": { "name": "input_text", "description": "Input text into focused field.", "parameters": { "type": "object", "properties": { "text": { "type": "string" } }, "required": ["text"] } } }"""))
         schema.put(JSONObject("""{ "type": "function", "function": { "name": "scroll", "description": "Scroll the view. 'down' means going further down (swiping up).", "parameters": { "type": "object", "properties": { "direction": { "type": "string", "enum": ["up", "down", "left", "right"] } }, "required": ["direction"] } } }"""))
-        schema.put(JSONObject("""{ "type": "function", "function": { "name": "press_key", "description": "System keys.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["back", "home", "recents"] } }, "required": ["action"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "scroll_until", "description": "Keep scrolling until the target text appears. Saves steps when hunting an item in a long list.", "parameters": { "type": "object", "properties": { "target": { "type": "string", "description": "Text to look for" }, "direction": { "type": "string", "enum": ["up", "down"] }, "max_swipes": { "type": "integer", "description": "Max swipes, default 6, max 12" } }, "required": ["target"] } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "get_page_text", "description": "Read all visible text on the current screen at once. Cheaper than several screenshots when reading a list.", "parameters": { "type": "object", "properties": {} } } }"""))
+        schema.put(JSONObject("""{ "type": "function", "function": { "name": "press_key", "description": "System keys. 'notifications' pulls down the notification shade.", "parameters": { "type": "object", "properties": { "action": { "type": "string", "enum": ["back", "home", "recents", "notifications"] } }, "required": ["action"] } } }"""))
         schema.put(JSONObject("""{ "type": "function", "function": { "name": "launch_app", "description": "Launch an app by name.", "parameters": { "type": "object", "properties": { "app_name": { "type": "string", "description": "Exact app name (e.g. 'WeChat')" } }, "required": ["app_name"] } } }"""))
         schema.put(JSONObject("""{ "type": "function", "function": { "name": "wait", "description": "Wait for a specific amount of time (seconds).", "parameters": { "type": "object", "properties": { "seconds": { "type": "integer" } }, "required": ["seconds"] } } }"""))
         schema.put(JSONObject("""{ "type": "function", "function": { "name": "finish_task", "description": "Call this when goal is achieved.", "parameters": { "type": "object", "properties": { "result": { "type": "string" }, "success": { "type": "boolean" } }, "required": ["result", "success"] } } }"""))
@@ -283,11 +296,26 @@ class AgentModule : BaseModule() {
             # MANDATORY PROTOCOL:
             1. **LAUNCH APP FIRST**: If task requires a specific app (e.g. "WeChat") and it's not open, CALL `launch_app`.
             2. **ONE STEP AT A TIME**: ONE tool call per turn.
-            3. **VISUAL PRIORITY**: Use `click_point(x, y)` with normalized coordinates (0-1000) from the screenshot.
+            3. **TAP STRATEGY (STRICT ORDER)**: 
+               - 1st: `click_node(index)` using the `[n]` number printed in the UI Hierarchy. This is exact, no coordinate math.
+               - 2nd: `click_element(target)` when you only know the text or view id.
+               - Last: `click_point(x, y)` ONLY for elements with no text, no id and no node in the tree.
             4. **VERIFY SUCCESS (CRITICAL)**: Before taking the next step, **CHECK the screen state** (Screenshot/XML) to confirm the previous action worked. 
                - Did the screen change? 
                - Did the text appear in the box?
                - **If NOT, DO NOT proceed. RETRY with a different method.**
+
+            # TOOL CHEATSHEET:
+            - `click_node(index)` — tap a node by its `[n]` index from the UI tree. Most reliable.
+            - `click_element(target)` — tap by exact text / view id.
+            - `click_point(x, y)` — tap by normalized coordinate, icons only.
+            - `long_press_element(target)` — long press for context menus / delete / multi-select.
+            - `swipe_element(target, direction)` — swipe inside a slider, carousel or horizontal row.
+            - `scroll_until(target, direction)` — scroll repeatedly until the text shows up. Use instead of scrolling step by step.
+            - `get_page_text()` — dump all visible text at once. Use it to read a list or check a form, cheaper than screenshots.
+            - `press_key(action)` — back / home / recents / notifications.
+            - `input_text(text)` — only works after the field is focused.
+            - `launch_app(name)`, `wait(seconds)`, `finish_task(result, success)`.
             
             # MOBILE UI COMMON SENSE (CRITICAL):
             1. **Search Hints are NOT Content**: Text inside search bars (e.g., "Search...", "请输入", "Type here") is usually a **placeholder**. You do **NOT** need to delete it. Just click the field and call `input_text`.
@@ -306,8 +334,9 @@ class AgentModule : BaseModule() {
                - **CONFIRM** the element type: Is it an `EditText`? A `Button`? Or just `TextView` (label)?
                - **READ** the exact `text` or `id` from XML. Visual OCR can be wrong; XML is the ground truth for text content.
             3. **Action Selection**:
-               - If the element has a unique `text` or `id` in XML, prefer `click_element(target="...")`. It is more robust than coordinates.
-               - If it's an icon with no text/id, use `click_point(x,y)` with normalized coordinates.
+               - **First choice**: `click_node(index)` with the `[n]` number of the matched node. Indexes are exact.
+               - If you only have the text: `click_element(target="...")`, it is still much better than coordinates.
+               - Last resort: `click_point(x,y)` for icons with no text, no id and no node in the tree.
                
             # REASONING GUIDE:
             - **Bad Reasoning**: "I see the search bar. I will call `input_text('hello')` immediately." (Wrong! It might not be focused).
@@ -360,6 +389,15 @@ class AgentModule : BaseModule() {
             var lastAction: LastAction? = null
             var repeatCount = 0
             var noToolCallCount = 0
+            // 是否还能用 tool_choice=required。DeepSeek 思考模式等会直接 400
+            // （Thinking mode does not support this tool_choice），首次失败后降级为 auto 并保持
+            var toolChoiceRequired = true
+            // 画面指纹 + 动作标记，用来判断「上一步操作后界面有没有变化」
+            var previousFingerprint: Long? = null
+            var lastActionChangedScreen = false
+            var shouldSettleAfterAction = false
+            // 事件驱动等待时如果根本没等到变化，直接认为上一步没生效
+            var noScreenChangeDetected = false
 
             val windowManager = context.applicationContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
             val displayMetrics = DisplayMetrics()
@@ -376,6 +414,12 @@ class AgentModule : BaseModule() {
                 overlayManager.hideForScreenshot() // 隐藏悬浮窗
             }
 
+            // 事件驱动的感知识别是否可用：虚拟屏没有无障碍事件流，服务没连上也收不到
+            val eventDrivenSensing = targetDisplayId == 0 && ServiceStateBus.getAccessibilityService() != null
+            // 虚拟屏用 ImageReader 的帧信号代替事件流，前提是会话就在内存里（Shell 兜底截图时没有帧可探）
+            val frameDrivenSensing = targetDisplayId > 0 &&
+                VirtualDisplayManager.getCurrentDisplayId() == targetDisplayId
+
             // --- 主循环 ---
             while (currentStep < maxSteps) {
                 // 在每一步开始前，检查是否暂停或被取消
@@ -389,6 +433,42 @@ class AgentModule : BaseModule() {
                 overlayManager.updateStatus("分析屏幕...", "准备截屏")
                 onProgress(ProgressUpdate("正在观察屏幕 (步骤 ${currentStep + 1}/$maxSteps)..."))
 
+                // 等待界面稳定。
+                // 主屏走无障碍事件：静默 UI_QUIET_MS 就继续，最多等到 UI_STABLE_TIMEOUT_MS；
+                // 虚拟屏走 ImageReader 帧信号，判定规则相同，只是信号源换了。
+                // 两条路都在「一个变化都没等到」时提前退出（动作没生效），不必干等到超时。
+                // 只有虚拟屏会话不在内存里这种拿不到任何信号的情况，才退回固定延时。
+                if (shouldSettleAfterAction) {
+                    shouldSettleAfterAction = false
+                    when {
+                        eventDrivenSensing -> {
+                            val stable = AgentUtils.awaitUiStable(
+                                quietMs = UI_QUIET_MS,
+                                timeoutMs = UI_STABLE_TIMEOUT_MS
+                            )
+                            if (!stable.changed) noScreenChangeDetected = true
+                            DebugLogger.d(
+                                "AgentModule",
+                                "等待界面稳定(无障碍事件): changed=${stable.changed} waited=${stable.waitedMs}ms timeout=${stable.timedOut}"
+                            )
+                        }
+
+                        frameDrivenSensing -> {
+                            val stable = AgentUtils.awaitVirtualUiStable(
+                                quietMs = UI_QUIET_MS,
+                                timeoutMs = UI_STABLE_TIMEOUT_MS
+                            )
+                            if (!stable.changed) noScreenChangeDetected = true
+                            DebugLogger.d(
+                                "AgentModule",
+                                "等待界面稳定(虚拟屏帧): changed=${stable.changed} waited=${stable.waitedMs}ms timeout=${stable.timedOut}"
+                            )
+                        }
+
+                        else -> delay(ACTION_SETTLE_MS)
+                    }
+                }
+
                 // --- 感知 ---
 
                 // 隐藏悬浮窗 (如果是主屏幕操作才需要)
@@ -399,23 +479,50 @@ class AgentModule : BaseModule() {
                 // 传入 targetDisplayId，captureScreen 会自动处理虚拟屏幕截取
                 val screenshotResult = AgentUtils.captureScreen(context.applicationContext, context)
 
-                // 传入 targetDisplayId 获取 UI 结构
-                val uiHierarchy = AgentUtils.dumpHierarchy(context.applicationContext, targetDisplayId)
+                // UI 树带节点编号，模型可以直接 click_node(n)，不用做坐标换算
+                val uiDump = AgentUtils.dumpUi(context.applicationContext, targetDisplayId)
+                val uiHierarchy = uiDump.text
 
                 if (targetDisplayId == 0) {
                     overlayManager.restoreAfterScreenshot()
                 }
 
+                // 截图已经取到，顺手清掉历史缓存文件
+                AgentUtils.cleanupScreenshots(context.workDir)
+
+                // 动作前后画面一模一样，多半是没点中或页面没响应。
+                // 有事件流（主屏无障碍）或帧流（虚拟屏 ImageReader）时以「有没有收到信号」为准，
+                // 两者都没有才退回截图指纹比对。
+                val currentFingerprint = AgentUtils.screenshotFingerprint(screenshotResult.base64)
+                val screenLikelyUnchanged = if (eventDrivenSensing || frameDrivenSensing) {
+                    noScreenChangeDetected
+                } else {
+                    lastActionChangedScreen &&
+                        previousFingerprint != null &&
+                        currentFingerprint != null &&
+                        previousFingerprint == currentFingerprint
+                }
+                previousFingerprint = currentFingerprint
+                lastActionChangedScreen = false
+                noScreenChangeDetected = false
+
                 val contentParts = JSONArray()
                 val stepsLeft = maxSteps - currentStep
                 val urgencyWarning = if (stepsLeft <= 2) "\n[WARNING] Only $stepsLeft steps left! Wrap up." else ""
+                val currentApp = AgentUtils.getForegroundApp(context.applicationContext)
+                val unchangedWarning = if (screenLikelyUnchanged) {
+                    "\n[SYSTEM] The screen did NOT change after your last action. The tap probably missed, or the page is not responding. Try another method (click_element / click_node) or wait.\n"
+                } else {
+                    ""
+                }
 
                 val textContext = """
                     Step: ${currentStep + 1} / $maxSteps $urgencyWarning
+                    Current App: $currentApp
                     Screen Size: ${screenWidth}x${screenHeight} (Coordinates must be normalized 0-1000)
-                    
-                    UI Hierarchy (Reference Only):
-                    ${uiHierarchy.take(16000)} ${if(uiHierarchy.length > 16000) "...(truncated)" else ""}
+                    $unchangedWarning
+                    UI Hierarchy (nodes are numbered [n], use click_node(n) to tap them):
+                    $uiHierarchy${if (uiDump.truncated) "\n...(more nodes omitted, scroll to see more)" else ""}
                 """.trimIndent()
 
                 contentParts.put(JSONObject().apply {
@@ -437,6 +544,23 @@ class AgentModule : BaseModule() {
                     })
                 }
 
+                // 只保留最新一张截图：历史轮次里的图片换成一句占位文本。
+                // 否则 N 步就有 N 张 base64，请求体迅速膨胀，还会稀释模型对当前画面的注意力。
+                for (mi in 0 until messages.length()) {
+                    val pastMessage = messages.optJSONObject(mi) ?: continue
+                    if (pastMessage.optString("role") != "user") continue
+                    val parts = pastMessage.optJSONArray("content") ?: continue
+                    for (pi in 0 until parts.length()) {
+                        val part = parts.optJSONObject(pi) ?: continue
+                        if (part.optString("type") == "image_url") {
+                            parts.put(pi, JSONObject().apply {
+                                put("type", "text")
+                                put("text", "[older screenshot omitted]")
+                            })
+                        }
+                    }
+                }
+
                 messages.put(JSONObject().apply {
                     put("role", "user")
                     put("content", contentParts)
@@ -450,17 +574,35 @@ class AgentModule : BaseModule() {
                     put("model", model)
                     put("messages", messages)
                     put("tools", getNativeToolsSchema())
-                    put("tool_choice", "required") // 强制工具调用
+                    put("tool_choice", if (toolChoiceRequired) "required" else "auto")
                 }
 
                 // 再次检查暂停状态（因为截图和思考可能耗时）
                 try { overlayManager.awaitState() } catch (e: CancellationException) { return ExecutionResult.Failure("任务取消", "用户手动停止了任务。") }
 
-                val responseJson = callLLM(client, baseUrl, apiKey, requestBody)
+                var llmResult = callLLM(client, baseUrl, apiKey, requestBody)
 
-                if (responseJson == null) {
-                    return ExecutionResult.Failure("API Error", "请求大模型失败，请检查网络或配置。")
+                // 首次遇到 tool_choice 不被支持时降级重试，重发同一个请求体，不重复追加消息
+                if (llmResult.isFailure &&
+                    toolChoiceRequired &&
+                    llmResult.exceptionOrNull()?.message?.contains("tool_choice", ignoreCase = true) == true
+                ) {
+                    toolChoiceRequired = false
+                    requestBody.put("tool_choice", "auto")
+                    DebugLogger.i("AgentModule", "模型不支持 tool_choice=required，本地降级为 auto 重试")
+                    llmResult = callLLM(client, baseUrl, apiKey, requestBody)
                 }
+
+                if (llmResult.isFailure) {
+                    val reason = llmResult.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
+                        ?: "请检查网络或配置"
+                    // 带上本次实际用的模型和地址，方便判断是不是选到了不支持的模型
+                    return ExecutionResult.Failure(
+                        "API Error",
+                        "请求大模型失败：$reason（model=$model, url=$baseUrl）"
+                    )
+                }
+                val responseJson = llmResult.getOrThrow()
 
                 val choice = responseJson.getJSONArray("choices").getJSONObject(0)
                 val message = choice.getJSONObject("message")
@@ -507,8 +649,13 @@ class AgentModule : BaseModule() {
 
                             // 更新悬浮窗显示即将执行的操作
                             val actionDisplay = when(name) {
+                                "click_node" -> "点击节点"
                                 "click_point" -> "点击坐标"
                                 "click_element" -> "点击元素"
+                                "long_press_element" -> "长按元素"
+                                "swipe_element" -> "滑动元素"
+                                "scroll_until" -> "滚动查找"
+                                "get_page_text" -> "读取页面文字"
                                 "input_text" -> "输入文本"
                                 "scroll" -> "滚动屏幕"
                                 "launch_app" -> "启动应用"
@@ -542,6 +689,13 @@ class AgentModule : BaseModule() {
                                     val suc = args["success"] as? Boolean ?: true
                                     taskResult = ExecutionResult.Success(mapOf("result" to VString(res), "success" to VBoolean(suc)))
                                 } else {
+                                    // 只读类工具不算「改变了界面」，用于后续的画面差分判断
+                                    val readOnlyTool = name == "wait" || name == "get_page_text" || name == "finish_task"
+                                    if (!readOnlyTool) {
+                                        lastActionChangedScreen = true
+                                        shouldSettleAfterAction = true
+                                    }
+
                                     toolResult = when(name) {
                                         "click_point" -> {
                                             val normX = (args["x"] as? Number)?.toInt() ?: 0
@@ -551,7 +705,22 @@ class AgentModule : BaseModule() {
                                             DebugLogger.d("AgentModule", "坐标映射: Norm($normX, $normY) -> Pixel($realX, $realY)")
                                             agentTools.clickPoint(realX, realY)
                                         }
+                                        "click_node" -> agentTools.clickNode((args["index"] as? Number)?.toInt() ?: -1)
                                         "click_element" -> agentTools.clickElement(args["target"]?.toString() ?: "")
+                                        "long_press_element" -> agentTools.longPressElement(
+                                            args["target"]?.toString() ?: "",
+                                            (args["duration_ms"] as? Number)?.toLong() ?: 1000L
+                                        )
+                                        "swipe_element" -> agentTools.swipeElement(
+                                            args["target"]?.toString() ?: "",
+                                            args["direction"]?.toString() ?: "left"
+                                        )
+                                        "scroll_until" -> agentTools.scrollUntil(
+                                            args["target"]?.toString() ?: "",
+                                            args["direction"]?.toString() ?: "down",
+                                            (args["max_swipes"] as? Number)?.toInt() ?: 6
+                                        )
+                                        "get_page_text" -> agentTools.getPageText()
                                         "input_text" -> agentTools.inputText(args["text"]?.toString() ?: "")
                                         "scroll" -> agentTools.scroll(args["direction"]?.toString() ?: "up")
                                         "press_key" -> agentTools.pressKey(args["action"]?.toString() ?: "")
@@ -604,7 +773,9 @@ class AgentModule : BaseModule() {
             } // 主循环结束
 
             return taskResult ?: ExecutionResult.Success(mapOf(
-                "result" to VString("Task stopped: Max steps ($maxSteps) reached."),
+                "result" to VString(
+                    "Task stopped: reached max steps ($maxSteps). Last action: ${lastAction?.name ?: "none"}."
+                ),
                 "success" to VBoolean(false)
             ))
 
@@ -628,7 +799,7 @@ class AgentModule : BaseModule() {
         }
     }
 
-    private suspend fun callLLM(client: OkHttpClient, url: String, key: String, body: JSONObject): JSONObject? {
+    private suspend fun callLLM(client: OkHttpClient, url: String, key: String, body: JSONObject): Result<JSONObject> {
         val endpoint = if (url.endsWith("/")) "${url}chat/completions" else "$url/chat/completions"
         val request = Request.Builder()
             .url(endpoint)
@@ -638,7 +809,7 @@ class AgentModule : BaseModule() {
             .build()
 
         return try {
-            suspendCancellableCoroutine { continuation ->
+            suspendCancellableCoroutine<Result<JSONObject>> { continuation ->
                 val call = client.newCall(request)
 
                 // 注册取消回调：一旦协程被取消，立即终止网络请求
@@ -654,7 +825,8 @@ class AgentModule : BaseModule() {
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
                         if (continuation.isActive) {
-                            continuation.resumeWithException(e)
+                            // 网络层错误：连接超时、DNS、TLS 等
+                            continuation.resume(Result.failure(e))
                         }
                     }
 
@@ -662,17 +834,31 @@ class AgentModule : BaseModule() {
                         // 在回调中读取数据，注意异常处理
                         try {
                             val str = response.body?.string()
-                            if (continuation.isActive) {
-                                if (response.isSuccessful && str != null) {
-                                    continuation.resume(JSONObject(str))
+                            if (!continuation.isActive) return
+                            if (response.isSuccessful && str != null) {
+                                val parsed = runCatching { JSONObject(str) }
+                                if (parsed.isFailure) {
+                                    DebugLogger.e("AgentModule", "LLM Bad JSON: $str")
+                                    continuation.resume(
+                                        Result.failure(IllegalStateException("响应不是合法 JSON：${str.take(200)}"))
+                                    )
                                 } else {
-                                    DebugLogger.e("AgentModule", "LLM Error: ${response.code} $str")
-                                    continuation.resume(null)
+                                    continuation.resume(parsed)
                                 }
+                            } else {
+                                // 把状态码和响应体带出去，否则用户只看到笼统的「请求失败」无法排查
+                                DebugLogger.e("AgentModule", "LLM Error: ${response.code} $str")
+                                continuation.resume(
+                                    Result.failure(
+                                        IllegalStateException(
+                                            "HTTP ${response.code}：${str?.take(300)?.ifBlank { "无响应体" } ?: "无响应体"}"
+                                        )
+                                    )
+                                )
                             }
                         } catch (e: Exception) {
                             if (continuation.isActive) {
-                                continuation.resumeWithException(e)
+                                continuation.resume(Result.failure(e))
                             }
                         }
                     }
@@ -683,7 +869,7 @@ class AgentModule : BaseModule() {
             if (e is kotlinx.coroutines.CancellationException) throw e
 
             DebugLogger.e("AgentModule", "LLM Exception", e)
-            null
+            Result.failure(e)
         }
     }
 }

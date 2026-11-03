@@ -87,6 +87,7 @@ open class AccessibilityService : AccessibilityService() {
         // 且复用「内容变化」通道：只唤醒检查，不污染 lastWindowClassName 等页面状态。
         if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
             val pkg = (packageName ?: "").ifBlank { ServiceStateBus.lastWindowPackageName ?: "" }
+            markPeerContentChanged(packageName)
             serviceScope.launch {
                 ServiceStateBus.postWindowContentChanged(pkg, className ?: "")
             }
@@ -107,10 +108,23 @@ open class AccessibilityService : AccessibilityService() {
         // TYPE_WINDOW_CONTENT_CHANGED: 窗口内容变化（控件出现/消失/更新）
         // 用于检测 vFlow 应用自己界面上的控件变化
         if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            markPeerContentChanged(packageName)
             serviceScope.launch {
                 ServiceStateBus.postWindowContentChanged(packageName, className)
             }
         }
+    }
+
+    /**
+     * 记录「目标 App 的界面动了」这个事实，供 AI 智能体的等待界面稳定逻辑使用。
+     *
+     * 必须排除 vFlow 自己的包名：智能体每步都会刷新悬浮窗里的状态文字，
+     * 那同样是 TYPE_WINDOW_CONTENT_CHANGED，混进来会让静默判定永远不成立。
+     */
+    private fun markPeerContentChanged(eventPackage: String?) {
+        if (eventPackage.isNullOrBlank()) return
+        if (eventPackage == this.packageName.toString()) return
+        ServiceStateBus.markContentChanged()
     }
 
     override fun onInterrupt() {

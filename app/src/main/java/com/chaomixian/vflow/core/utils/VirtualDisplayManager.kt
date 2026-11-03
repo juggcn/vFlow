@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -30,6 +31,9 @@ object VirtualDisplayManager {
     )
 
     private var currentSession: VirtualDisplaySession? = null
+
+    /** 探测期间抓到的最新一帧，供紧接其后的截图直接复用，避免帧被消费两次导致无帧可用 */
+    private var lastFrame: Bitmap? = null
     private val mutex = Mutex()
     private var backgroundHandler: Handler? = null
     private var handlerThread: HandlerThread? = null
@@ -107,6 +111,9 @@ object VirtualDisplayManager {
         }
         currentSession = null
 
+        lastFrame?.let { if (!it.isRecycled) it.recycle() }
+        lastFrame = null
+
         // 停止后台线程
         handlerThread?.quitSafely()
         handlerThread = null
@@ -132,36 +139,80 @@ object VirtualDisplayManager {
     fun captureCurrentFrame(): Bitmap? {
         val session = currentSession ?: return null
 
+        // 等待界面稳定期间已经抓过一帧，直接交出去（所有权转移，由调用方负责 recycle）
+        lastFrame?.let { cached ->
+            lastFrame = null
+            if (!cached.isRecycled) return cached
+        }
+
         try {
             // 获取最新图像
             val image = session.imageReader.acquireLatestImage() ?: return null
-
-            val planes = image.planes
-            val buffer = planes[0].buffer
-            val pixelStride = planes[0].pixelStride
-            val rowStride = planes[0].rowStride
-            val rowPadding = rowStride - pixelStride * session.width
-
-            // 创建 Bitmap
-            val bitmap = Bitmap.createBitmap(
-                session.width + rowPadding / pixelStride,
-                session.height,
-                Bitmap.Config.ARGB_8888
-            )
-            bitmap.copyPixelsFromBuffer(buffer)
-            image.close()
-
-            // 如果有 padding，裁剪一下
-            return if (rowPadding == 0) {
-                bitmap
-            } else {
-                val cropped = Bitmap.createBitmap(bitmap, 0, 0, session.width, session.height)
-                bitmap.recycle()
-                cropped
+            return try {
+                imageToBitmap(image, session)
+            } finally {
+                image.close()
             }
         } catch (e: Exception) {
             DebugLogger.e(TAG, "抓取屏幕帧失败", e)
             return null
+        }
+    }
+
+    /**
+     * 探测「有没有新帧」，并把这一帧缓存下来供随后的 [captureCurrentFrame] 复用。
+     *
+     * 返回帧时间戳；返回 null 表示此刻没有待消费的帧，也就是界面这段时间没有刷新。
+     * ImageReader 是生产者-消费者模型，探到帧就必须消费，不缓存的话后面的截图会拿不到画面，
+     * 所以这里顺手把像素转成 Bitmap 留下来。
+     */
+    fun peekFrameTimestamp(): Long? {
+        val session = currentSession ?: return null
+
+        val image = try {
+            session.imageReader.acquireLatestImage()
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "探测虚拟屏帧失败", e)
+            null
+        } ?: return null
+
+        return try {
+            // 先转成功再替换缓存，中途异常时不能把旧引用指向已 recycle 的 Bitmap
+            val bitmap = imageToBitmap(image, session)
+            lastFrame?.let { if (!it.isRecycled) it.recycle() }
+            lastFrame = bitmap
+            image.timestamp
+        } catch (e: Exception) {
+            DebugLogger.e(TAG, "缓存虚拟屏帧失败", e)
+            null
+        } finally {
+            image.close()
+        }
+    }
+
+    /** 把 ImageReader 的一帧转成 Bitmap，并按 rowPadding 裁掉右侧填充 */
+    private fun imageToBitmap(image: Image, session: VirtualDisplaySession): Bitmap {
+        val planes = image.planes
+        val buffer = planes[0].buffer
+        val pixelStride = planes[0].pixelStride
+        val rowStride = planes[0].rowStride
+        val rowPadding = rowStride - pixelStride * session.width
+
+        // 创建 Bitmap
+        val bitmap = Bitmap.createBitmap(
+            session.width + rowPadding / pixelStride,
+            session.height,
+            Bitmap.Config.ARGB_8888
+        )
+        bitmap.copyPixelsFromBuffer(buffer)
+
+        // 如果有 padding，裁剪一下
+        return if (rowPadding == 0) {
+            bitmap
+        } else {
+            val cropped = Bitmap.createBitmap(bitmap, 0, 0, session.width, session.height)
+            bitmap.recycle()
+            cropped
         }
     }
 }

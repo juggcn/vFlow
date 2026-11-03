@@ -33,6 +33,19 @@ object ServiceStateBus {
     var lastWindowPackageName: String? = null
         private set
 
+    /**
+     * 最近一次「别人家的」界面内容变化时间（SystemClock.elapsedRealtime）。
+     * 供 AgentUtils.awaitUiStable 判断界面是否还在动。
+     * vFlow 自己悬浮窗的刷新不计入，否则智能体永远等不到静默。
+     */
+    @Volatile
+    var lastContentChangeAt: Long = 0L
+        private set
+
+    fun markContentChanged() {
+        lastContentChangeAt = android.os.SystemClock.elapsedRealtime()
+    }
+
     // 缓存最近一次确认的 Activity 信息，供“所在页面”和获取当前 Activity 使用
     var lastActivityClassName: String? = null
         private set

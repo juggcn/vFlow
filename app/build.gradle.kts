@@ -149,6 +149,9 @@ android {
             excludes += "META-INF/DEPENDENCIES"
         }
         jniLibs {
+            // 保持 so 原样存储（不压进 zip）：包体 113MB 左右，但装机后直接 mmap，
+            // 启动快、不额外占用存储。改成 true 可压到 65MB，代价是安装时解压。
+            useLegacyPackaging = false
             pickFirsts += setOf(
                 "lib/**/libc++_shared.so",
                 "lib/**/libopencv_java4.so",
