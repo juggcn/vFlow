@@ -386,6 +386,10 @@
     <string name="settings_search_no_results">没有找到相关设置</string>
     <string name="settings_search_no_results_hint">试试更短的关键词，或换一个描述方式。</string>
     <string name="workflow_search_placeholder">搜索工作流</string>
+    <string name="workflow_filter_all">全部</string>
+    <string name="workflow_filter_folder_label">%1$s · %2$d</string>
+    <string name="workflow_filter_expand">展开 %1$d 个</string>
+    <string name="workflow_filter_collapse">收起</string>
     <string name="workflow_search_clear">清空搜索</string>
     <string name="workflow_search_no_results">没有找到相关工作流</string>
     <string name="workflow_search_no_results_hint">试试更短的关键词，或换一个描述方式。</string>
@@ -1362,6 +1366,24 @@
     <string name="ui_inspector_width">控件长度(W)</string>
     <string name="ui_inspector_height">控件宽度(H)</string>
     <string name="ui_inspector_gkd_selector">GKD选择器</string>
+
+    <!-- 选择器拾取与交互录制 -->
+    <string name="ui_inspector_selector_candidates">选择器候选</string>
+    <string name="ui_inspector_no_candidate">无可用选择器</string>
+    <string name="ui_inspector_no_candidate_hint">该控件没有文字、描述或 ID，建议改用图片匹配或 OCR</string>
+    <string name="ui_inspector_duplicate_notice">提示</string>
+    <string name="ui_inspector_duplicate_count">同属性控件共 %1$d 个，仅靠属性无法唯一定位</string>
+    <string name="ui_inspector_hit_count">命中 %1$d 个</string>
+    <string name="ui_inspector_clickable_ancestor">实际可点击节点</string>
+    <string name="ui_inspector_menu_title">检查器选项</string>
+    <string name="ui_inspector_menu_start_record">开始录制操作</string>
+    <string name="ui_inspector_menu_stop_record">停止录制并插入（%1$d 条）</string>
+    <string name="ui_inspector_menu_close">关闭检查器</string>
+    <string name="ui_inspector_record_started">录制中：正常操作 App 即可，长按图标停止</string>
+    <string name="ui_inspector_record_empty">没有录到任何操作</string>
+    <string name="ui_inspector_record_need_editor">请从工作流编辑器的检查器入口启动后再录制</string>
+    <string name="editor_toast_recorded_steps_empty">没有可插入的录制步骤</string>
+    <string name="editor_toast_recorded_steps_inserted">已插入 %1$d 个步骤</string>
     <string name="ui_inspector_float_permission_error">无法显示悬浮窗，请检查权限</string>
     <string name="ui_inspector_copied">已复制 %s</string>
     <string name="ui_inspector_click_module_inserted">已发送插入请求：%1$s</string>

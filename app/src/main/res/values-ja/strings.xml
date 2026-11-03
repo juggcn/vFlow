@@ -366,6 +366,10 @@
     <string name="settings_search_no_results">関連する設定が見つかりません</string>
     <string name="settings_search_no_results_hint">短いキーワードまたは別の説明を試してください。</string>
     <string name="workflow_search_placeholder">検索ワークフロー</string>
+    <string name="workflow_filter_all">すべて</string>
+    <string name="workflow_filter_folder_label">%1$s · %2$d</string>
+    <string name="workflow_filter_expand">あと %1$d 件</string>
+    <string name="workflow_filter_collapse">折りたたむ</string>
     <string name="workflow_search_clear">検索をクリア</string>
     <string name="workflow_search_no_results">関連するワークフローが見つかりませんでした</string>
     <string name="workflow_search_no_results_hint">短いキーワードまたは別の説明を試してください。</string>
@@ -1288,6 +1292,24 @@
     <string name="ui_inspector_width">コントロール長さ(W)</string>
     <string name="ui_inspector_height">コントロール幅(H)</string>
     <string name="ui_inspector_gkd_selector">GKD セレクター</string>
+
+    <!-- セレクタのピックと操作の記録 -->
+    <string name="ui_inspector_selector_candidates">セレクタ候補</string>
+    <string name="ui_inspector_no_candidate">利用できるセレクタがありません</string>
+    <string name="ui_inspector_no_candidate_hint">このコントロールにはテキスト・説明・ID がないため、画像マッチングか OCR を使ってください</string>
+    <string name="ui_inspector_duplicate_notice">ヒント</string>
+    <string name="ui_inspector_duplicate_count">同じ属性のコントロールが %1$d 個あります。属性だけでは特定できません</string>
+    <string name="ui_inspector_hit_count">%1$d 件一致</string>
+    <string name="ui_inspector_clickable_ancestor">実際にクリック可能なノード</string>
+    <string name="ui_inspector_menu_title">インスペクタのオプション</string>
+    <string name="ui_inspector_menu_start_record">操作の記録を開始</string>
+    <string name="ui_inspector_menu_stop_record">記録を停止して挿入（%1$d 件）</string>
+    <string name="ui_inspector_menu_close">インスペクタを閉じる</string>
+    <string name="ui_inspector_record_started">記録中：アプリを普通に操作してください。長押しで停止します</string>
+    <string name="ui_inspector_record_empty">操作が記録されていません</string>
+    <string name="ui_inspector_record_need_editor">ワークフローエディタから起動した場合のみ記録を挿入できます</string>
+    <string name="editor_toast_recorded_steps_empty">挿入できる記録がありません</string>
+    <string name="editor_toast_recorded_steps_inserted">%1$d 個のステップを挿入しました</string>
     <string name="ui_inspector_float_permission_error">フローティング ウィンドウを表示できません。権限を確認してください。</string>
     <string name="ui_inspector_copied">%s をコピーしました</string>
     <string name="ui_inspector_click_module_inserted">送信された挿入リクエスト: %1$s</string>

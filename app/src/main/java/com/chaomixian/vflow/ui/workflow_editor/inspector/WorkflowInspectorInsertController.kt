@@ -13,6 +13,8 @@ import com.chaomixian.vflow.core.module.ActionModule
 import com.chaomixian.vflow.core.module.ModuleRegistry
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.services.UiInspectorService
+import com.chaomixian.vflow.services.InteractionRecorder
+import java.util.UUID
 
 class WorkflowInspectorInsertController(
     private val activity: Activity,
@@ -88,6 +90,12 @@ class WorkflowInspectorInsertController(
                     parameters = linkedMapOf("targetText" to (request.value ?: ""))
                 )
             }
+            WorkflowInspectorInsertRequest.Type.CLICK_SELECTOR -> {
+                insertSelectorClick(request.value ?: "")
+            }
+            WorkflowInspectorInsertRequest.Type.INSERT_RECORDED_STEPS -> {
+                insertRecordedSteps()
+            }
         }
 
         if (!success) {
@@ -145,5 +153,69 @@ class WorkflowInspectorInsertController(
             currentStep = currentStep.copy(parameters = updated)
         }
         return currentStep.parameters
+    }
+
+    /**
+     * 按选择器点击：插入「UI选择器」+「点击」两步。
+     *
+     * 点击模块的 target 只认控件 ID 或坐标，不认选择器，所以必须先用
+     * UI选择器模块把节点找出来，再把它的 element 输出用魔法变量接到点击上。
+     */
+    private fun insertSelectorClick(selector: String): Boolean {
+        if (selector.isBlank()) return false
+
+        val findModule = ModuleRegistry.getModule("vflow.interaction.ui_selector")
+            ?: return false
+        val clickModule = ModuleRegistry.getModule("vflow.device.click")
+            ?: return false
+        val findBase = findModule.createSteps().firstOrNull() ?: return false
+        val clickBase = clickModule.createSteps().firstOrNull() ?: return false
+
+        // 引用格式 {{stepId.outputId}}，与编辑器魔法变量目录保持一致
+        val findStepId = UUID.randomUUID().toString()
+        val findStep = findBase.copy(
+            id = findStepId,
+            parameters = findBase.parameters + ("selector" to selector)
+        )
+        val clickStep = clickBase.copy(
+            parameters = clickBase.parameters + ("target" to "{{${findStepId}.element}}")
+        )
+
+        onBeforeStepsChanged()
+        actionSteps.add(findStep)
+        actionSteps.add(clickStep)
+        onStepsChanged()
+        recyclerView.post {
+            recyclerView.smoothScrollToPosition((recyclerView.adapter?.itemCount ?: 1) - 1)
+        }
+        Toast.makeText(
+            activity,
+            activity.getString(R.string.editor_toast_module_inserted, findModule.metadata.getLocalizedName(activity)),
+            Toast.LENGTH_SHORT
+        ).show()
+        return true
+    }
+
+    /** 插入录制好的整段步骤 */
+    private fun insertRecordedSteps(): Boolean {
+        val steps = InteractionRecorder.toActionSteps()
+        if (steps.isEmpty()) {
+            Toast.makeText(activity, R.string.editor_toast_recorded_steps_empty, Toast.LENGTH_SHORT).show()
+            return false
+        }
+
+        onBeforeStepsChanged()
+        actionSteps.addAll(steps)
+        onStepsChanged()
+        InteractionRecorder.clear()
+        recyclerView.post {
+            recyclerView.smoothScrollToPosition((recyclerView.adapter?.itemCount ?: 1) - 1)
+        }
+        Toast.makeText(
+            activity,
+            activity.getString(R.string.editor_toast_recorded_steps_inserted, steps.size),
+            Toast.LENGTH_SHORT
+        ).show()
+        return true
     }
 }

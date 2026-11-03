@@ -45,8 +45,6 @@ import kotlin.math.abs
 
 class AutoGLMModule : BaseModule() {
     companion object {
-        private const val PROVIDER_BIGMODEL = "bigmodel"
-        private const val PROVIDER_CUSTOM = "custom"
         private const val DISPLAY_MODE_MAIN = "main_screen"
         private const val DISPLAY_MODE_VIRTUAL = "virtual_screen"
     }
@@ -77,24 +75,16 @@ class AutoGLMModule : BaseModule() {
     }
 
     override fun getInputs(): List<InputDefinition> = listOf(
+        // 模型来源与「AI 对话」一致：从已保存的模型配置里选，选完带出地址/密钥/模型名。
+        // preset_id 为空表示自定义，此时下面的 base_url / api_key / model 由用户手填。
         InputDefinition(
-            "provider",
-            "服务商",
-            ParameterType.ENUM,
-            PROVIDER_BIGMODEL,
-            options = listOf(PROVIDER_BIGMODEL, PROVIDER_CUSTOM),
-            nameStringRes = R.string.param_vflow_ai_agent_provider_name,
-            optionsStringRes = listOf(
-                R.string.option_vflow_ai_agent_provider_zhipu,
-                R.string.option_vflow_ai_completion_provider_custom
-            ),
-            legacyValueMap = mapOf(
-                "智谱" to PROVIDER_BIGMODEL,
-                "Zhipu" to PROVIDER_BIGMODEL,
-                "自定义" to PROVIDER_CUSTOM,
-                "Custom" to PROVIDER_CUSTOM
-            )
+            "preset_id",
+            "模型",
+            ParameterType.STRING,
+            AgentPresetChips.PRESET_CUSTOM,
+            nameStringRes = R.string.param_vflow_network_ai_preset
         ),
+        InputDefinition("preset_name", "模型名", ParameterType.STRING, "", isHidden = true),
         InputDefinition("base_url", "Base URL", ParameterType.STRING, "https://open.bigmodel.cn/api/paas/v4", nameStringRes = R.string.param_vflow_ai_agent_base_url_name),
         InputDefinition("api_key", "API Key", ParameterType.STRING, "", nameStringRes = R.string.param_vflow_ai_agent_api_key_name),
         InputDefinition("model", "模型", ParameterType.STRING, "autoglm-phone", nameStringRes = R.string.param_vflow_ai_agent_model_name),
@@ -131,17 +121,27 @@ class AutoGLMModule : BaseModule() {
         val displayMode = step.parameters["display_mode"] as? String ?: DISPLAY_MODE_MAIN
         val prefix = if (displayMode == DISPLAY_MODE_VIRTUAL) context.getString(R.string.summary_vflow_agent_background_prefix) else ""
 
+        // 与「AI 对话」一致：标题里带上模型名，一眼能看出这一步用的是哪个模型
+        val title = prefix + metadata.getLocalizedName(context) + getModelSuffix(step)
+
         // 如果指令复杂，只显示标题，避免与预览框重复
         if (VariableResolver.isComplex(rawInstruction)) {
             return PillUtil.buildSpannable(
                 context,
-                prefix + metadata.getLocalizedName(context),
+                title,
                 PillUtil.richTextPreview(rawInstruction)
             )
         }
 
         val instructionPill = PillUtil.createPillFromParam(step.parameters["instruction"], getInputs().find { it.id == "instruction" })
-        return PillUtil.buildSpannable(context, prefix + metadata.getLocalizedName(context) + ": ", instructionPill)
+        return PillUtil.buildSpannable(context, "$title: ", instructionPill)
+    }
+
+    /** 摘要里的模型后缀：优先用选中预设的名字，退回模型名，都没有就不显示 */
+    private fun getModelSuffix(step: ActionStep): String {
+        val name = (step.parameters["preset_name"] as? String).orEmpty().trim()
+            .ifBlank { (step.parameters["model"] as? String).orEmpty().trim() }
+        return if (name.isEmpty()) "" else " · $name"
     }
 
     override suspend fun execute(

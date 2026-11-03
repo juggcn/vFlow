@@ -1,3 +1,6 @@
+// 文件: main/java/com/chaomixian/vflow/core/workflow/module/interaction/AutoGLMModuleUIProvider.kt
+// 描述: 「AutoGLM 智能体」的编辑卡片。模型选择与「AI 对话」一致：
+//      从已保存的模型配置里选，选中后自动带出 Base URL / API Key / 模型名。
 package com.chaomixian.vflow.core.workflow.module.interaction
 
 import android.content.Context
@@ -16,7 +19,6 @@ import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.ui.workflow_editor.RichTextView
-import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.TextInputEditText
@@ -25,16 +27,10 @@ import com.google.android.material.textfield.TextInputEditText
  * AutoGLM 专用 UI 提供者
  */
 class AutoGLMModuleUIProvider : ModuleUIProvider {
-    companion object {
-        private const val PROVIDER_BIGMODEL = "bigmodel"
-        private const val PROVIDER_CUSTOM = "custom"
-    }
 
     class ViewHolder(view: View) : CustomEditorViewHolder(view) {
-        val providerGroup: ChipGroup = view.findViewById(R.id.cg_provider)
-        val chipBigModel: Chip = view.findViewById(R.id.chip_bigmodel) // 智谱
-        val chipDashScope: Chip = view.findViewById(R.id.chip_dashscope) // 阿里云
-        val chipCustom: Chip = view.findViewById(R.id.chip_custom) // 自定义
+        val presetGroup: ChipGroup = view.findViewById(R.id.cg_preset)
+        val presetHint: TextView = view.findViewById(R.id.tv_preset_hint)
 
         val baseUrlEdit: TextInputEditText = view.findViewById(R.id.et_base_url)
         val modelEdit: TextInputEditText = view.findViewById(R.id.et_model)
@@ -45,12 +41,18 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
         val stepsSlider: Slider = view.findViewById(R.id.slider_max_steps)
         val stepsText: TextView = view.findViewById(R.id.tv_max_steps_value)
 
+        /** 当前选中的模型预设 id，空表示自定义 */
+        var presetId: String = AgentPresetChips.PRESET_CUSTOM
+
+        /** 当前选中预设的显示名，写进参数供摘要使用 */
+        var presetName: String = ""
+
         var instructionRichText: RichTextView? = null
         var allSteps: List<ActionStep>? = null
     }
 
     override fun getHandledInputIds(): Set<String> = setOf(
-        "provider", "base_url", "model", "api_key", "instruction", "max_steps"
+        "preset_id", "preset_name", "base_url", "model", "api_key", "instruction", "max_steps"
     )
 
     override fun createEditor(
@@ -70,42 +72,52 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
         view.findViewById<View>(R.id.btn_select_tools)?.isVisible = false
         view.findViewById<View>(R.id.tv_selected_tools)?.isVisible = false
 
-        // 隐藏阿里云选项
-        holder.chipDashScope.visibility = View.GONE
+        // 模型选项：直接读「AI 对话」里已保存的模型
+        val selectedPresetId = currentParameters["preset_id"] as? String
+            ?: AgentPresetChips.PRESET_CUSTOM
+        holder.presetId = selectedPresetId
+        holder.presetName = currentParameters["preset_name"] as? String ?: ""
 
-        // 恢复服务商配置
-        val provider = currentParameters["provider"] as? String ?: PROVIDER_BIGMODEL
-        when (provider) {
-            PROVIDER_BIGMODEL -> holder.chipBigModel.isChecked = true
-            PROVIDER_CUSTOM -> holder.chipCustom.isChecked = true
-            else -> holder.chipBigModel.isChecked = true // 默认 fallback
+        AgentPresetChips.build(
+            context = context,
+            group = holder.presetGroup,
+            hint = holder.presetHint,
+            presets = AgentPresetChips.load(context),
+            selectedPresetId = selectedPresetId
+        ) { preset ->
+            // 先更新选中状态再刷新输入框：setText 会触发 onParametersChanged，
+            // 那会儿读到的必须是新选中的预设，否则会把旧 id 写回参数。
+            holder.presetId = preset?.id ?: AgentPresetChips.PRESET_CUSTOM
+            holder.presetName = preset?.let { it.name.ifBlank { it.model } } ?: ""
+
+            if (preset != null) {
+                holder.baseUrlEdit.setText(preset.baseUrl)
+                holder.modelEdit.setText(preset.model)
+                holder.apiKeyEdit.setText(preset.apiKey)
+            }
+            onParametersChanged()
         }
 
         // 设置默认值
-        holder.baseUrlEdit.setText(currentParameters["base_url"] as? String ?: "https://open.bigmodel.cn/api/paas/v4")
+        holder.baseUrlEdit.setText(
+            currentParameters["base_url"] as? String
+                ?: "https://open.bigmodel.cn/api/paas/v4"
+        )
         holder.modelEdit.setText(currentParameters["model"] as? String ?: "autoglm-phone")
         holder.apiKeyEdit.setText(currentParameters["api_key"] as? String ?: "")
 
         // 恢复 Instruction
-        setupInstructionEditor(context, holder, currentParameters["instruction"] as? String ?: "", onMagicVariableRequested)
+        setupInstructionEditor(
+            context,
+            holder,
+            currentParameters["instruction"] as? String ?: "",
+            onMagicVariableRequested
+        )
 
         // 恢复 Max Steps (默认 30)
         val maxSteps = (currentParameters["max_steps"] as? Number)?.toFloat() ?: 30f
         holder.stepsSlider.value = maxSteps
         holder.stepsText.text = "${maxSteps.toInt()}"
-
-        // 监听器
-        holder.providerGroup.setOnCheckedStateChangeListener { _, checkedIds ->
-            if (checkedIds.isEmpty()) return@setOnCheckedStateChangeListener
-            when (checkedIds[0]) {
-                R.id.chip_bigmodel -> {
-                    holder.baseUrlEdit.setText("https://open.bigmodel.cn/api/paas/v4")
-                    holder.modelEdit.setText("autoglm-phone")
-                }
-                // 自定义时不修改文本，保留用户输入
-            }
-            onParametersChanged()
-        }
 
         val textWatcher = { _: Editable? -> onParametersChanged() }
         holder.baseUrlEdit.doAfterTextChanged(textWatcher)
@@ -148,13 +160,9 @@ class AutoGLMModuleUIProvider : ModuleUIProvider {
     override fun readFromEditor(holder: CustomEditorViewHolder): Map<String, Any?> {
         val h = holder as ViewHolder
 
-        val provider = when {
-            h.chipCustom.isChecked -> PROVIDER_CUSTOM
-            else -> PROVIDER_BIGMODEL
-        }
-
         return mapOf(
-            "provider" to provider,
+            "preset_id" to h.presetId,
+            "preset_name" to h.presetName,
             "base_url" to h.baseUrlEdit.text.toString(),
             "model" to h.modelEdit.text.toString(),
             "api_key" to h.apiKeyEdit.text.toString(),

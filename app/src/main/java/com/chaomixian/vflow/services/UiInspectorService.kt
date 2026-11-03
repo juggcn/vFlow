@@ -32,8 +32,11 @@ import android.widget.Toast
 import androidx.annotation.AttrRes
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.core.inspect.InspectResult
+import com.chaomixian.vflow.core.inspect.SelectorCandidateBuilder
 import com.chaomixian.vflow.core.logging.DebugLogger
 import com.chaomixian.vflow.core.locale.LocaleManager
+import com.chaomixian.vflow.core.workflow.module.triggers.handlers.collectWindowRoots
 import com.chaomixian.vflow.ui.common.AppearanceManager
 import com.chaomixian.vflow.ui.common.ThemeUtils
 import com.chaomixian.vflow.ui.workflow_editor.inspector.WorkflowInspectorInsertRequest
@@ -64,7 +67,12 @@ class UiInspectorService : Service() {
     private lateinit var frameParams: WindowManager.LayoutParams
 
     private var currentNodeInfo: AccessibilityNodeInfo? = null
-    private var currentRootNode: AccessibilityNodeInfo? = null
+
+    /** 当前这一轮拾取抓到的全部窗口根节点 */
+    private var currentRoots: List<AccessibilityNodeInfo> = emptyList()
+
+    /** 当前拾取结果（含候选选择器与唯一性） */
+    private var currentInspect: InspectResult? = null
 
     private var screenWidth = 0
     private var screenHeight = 0
@@ -291,8 +299,13 @@ class UiInspectorService : Service() {
                     downTime = System.currentTimeMillis()
 
                     val service = ServiceStateBus.getAccessibilityService()
-                    currentRootNode = service?.rootInActiveWindow
-                    if (service == null) {
+                    if (service != null) {
+                        // 抓全部窗口：浮层广告、PopupWindow 通常不在 rootInActiveWindow 里，
+                        // 只看激活窗口会整片漏掉，这是旧版「获取不了」的主因。
+                        currentRoots = runCatching { collectWindowRoots(service) }
+                            .getOrDefault(emptyList())
+                    } else {
+                        currentRoots = emptyList()
                         Toast.makeText(this, getString(R.string.ui_inspector_enable_accessibility), Toast.LENGTH_SHORT).show()
                     }
                     true
@@ -316,14 +329,14 @@ class UiInspectorService : Service() {
                     flushPendingInspection()
                     val pressDuration = System.currentTimeMillis() - downTime
                     if (!isDragging && pressDuration >= LONG_PRESS_TIMEOUT) {
-                        // 长按：关闭服务
-                        stopSelf()
+                        // 长按：录制 / 关闭菜单
+                        showServiceMenu()
                     } else if (!isDragging) {
                         // 短按：显示详情
                         inspectCurrentIconCenter()
                         showNodeDetails()
                     }
-                    currentRootNode = null
+                    currentRoots = emptyList()
                     true
                 }
                 else -> false
@@ -372,7 +385,8 @@ class UiInspectorService : Service() {
     }
 
     private fun updateCurrentCoordinateLabel(x: Int, y: Int) {
-        val newLabel = "$x,$y"
+        // 录制中在坐标前面加个实心点，一眼看出当前状态
+        val newLabel = if (InteractionRecorder.isRecording) "● $x,$y" else "$x,$y"
         val labelView = coordinateLabelView ?: return
 
         if (labelView.text != newLabel) {
@@ -393,29 +407,58 @@ class UiInspectorService : Service() {
         } catch (_: Exception) { }
     }
 
+    /**
+     * 松开手指后的完整拾取：生成候选选择器并统计唯一性。
+     * 唯一性要遍历整棵树，拖动过程中不做（32ms 一次会明显卡）。
+     */
     private fun inspectNodeAt(x: Int, y: Int) {
-        performNodeInspection(x, y)
+        val target = findTopTarget(x, y) ?: return
+        currentNodeInfo = target
+        currentInspect = runCatching {
+            SelectorCandidateBuilder.inspect(target, currentRoots)
+        }.getOrNull()
+        currentInspect?.let { drawSelectionFrame(it.bounds) }
     }
 
+    /** 拖动过程中的轻量拾取：只找节点画框，不做唯一性统计 */
     private fun performNodeInspection(x: Int, y: Int) {
-        val root = currentRootNode ?: return
-        val targetNode = findSmallestNodeAtPoint(root, x, y)
-
-        if (targetNode != null && targetNode != currentNodeInfo) {
-            currentNodeInfo = targetNode
-            val rect = Rect()
-            targetNode.getBoundsInScreen(rect)
-
-            frameParams.x = rect.left
-            frameParams.y = rect.top
-            frameParams.width = rect.width()
-            frameParams.height = rect.height()
-
-            selectionFrameView?.visibility = View.VISIBLE
-            try {
-                windowManager.updateViewLayout(selectionFrameView, frameParams)
-            } catch (e: Exception) { }
+        val target = findTopTarget(x, y)
+        if (target == null) {
+            currentNodeInfo = null
+            currentInspect = null
+            selectionFrameView?.visibility = View.GONE
+            return
         }
+        if (target == currentNodeInfo) return
+        currentNodeInfo = target
+        drawSelectionFrame(Rect().also { target.getBoundsInScreen(it) })
+    }
+
+    /**
+     * 在所有窗口里各找一个包含该点的最小节点，取面积最小的那个。
+     * 多窗口是必须的：浮层广告是独立窗口，rootInActiveWindow 里根本没有它。
+     */
+    private fun findTopTarget(x: Int, y: Int): AccessibilityNodeInfo? {
+        val roots = currentRoots
+        if (roots.isEmpty()) return null
+        return roots.asSequence()
+            .mapNotNull { root -> findSmallestNodeAtPoint(root, x, y) }
+            .minByOrNull { node ->
+                val rect = Rect().also { node.getBoundsInScreen(it) }
+                rect.width() * rect.height()
+            }
+    }
+
+    private fun drawSelectionFrame(rect: Rect) {
+        frameParams.x = rect.left
+        frameParams.y = rect.top
+        frameParams.width = rect.width()
+        frameParams.height = rect.height()
+
+        selectionFrameView?.visibility = View.VISIBLE
+        try {
+            windowManager.updateViewLayout(selectionFrameView, frameParams)
+        } catch (_: Exception) { }
     }
 
     private fun findSmallestNodeAtPoint(node: AccessibilityNodeInfo, x: Int, y: Int): AccessibilityNodeInfo? {
@@ -425,16 +468,15 @@ class UiInspectorService : Service() {
         // 检查点是否在节点范围内
         if (!bounds.contains(x, y)) return null
 
-        // 收集所有包含该点的可见子节点
+        // 收集所有包含该点的子节点。
+        // 这里不要求 isVisibleToUser：浮层叠在页面上时，系统常把真正的按钮判成不可见，
+        // 但用户肉眼能看到也点得到它。只按 bounds 判定，最后取面积最小的即可。
         val validChildren = mutableListOf<AccessibilityNodeInfo>()
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            // 只考虑可见的节点
-            if (child.isVisibleToUser) {
-                val found = findSmallestNodeAtPoint(child, x, y)
-                if (found != null) {
-                    validChildren.add(found)
-                }
+            val found = findSmallestNodeAtPoint(child, x, y)
+            if (found != null) {
+                validChildren.add(found)
             }
         }
 
@@ -447,19 +489,76 @@ class UiInspectorService : Service() {
             }
         }
 
-        // 如果没有子节点，检查当前节点是否可见
-        return if (node.isVisibleToUser) node else null
+        // 没有子节点命中时返回自身，但面积为 0 的节点（隐藏/占位）不算
+        return if (bounds.width() > 0 && bounds.height() > 0) node else null
+    }
+
+    // --- 录制 ---
+
+    /**
+     * 长按悬浮图标弹出的菜单。
+     *
+     * 录制期间不挂任何全屏捕获层——用户照常操作 App，录制靠无障碍事件完成，
+     * 这样才看得到真实界面反馈（旧的触摸回放是吃掉触摸后盲录的）。
+     */
+    private fun showServiceMenu() {
+        val dialogContext = ThemeUtils.createThemedContext(
+            ServiceStateBus.getAccessibilityService() ?: this
+        )
+
+        val labels = mutableListOf<String>()
+        val actions = mutableListOf<() -> Unit>()
+
+        if (InteractionRecorder.isRecording) {
+            labels.add(getString(R.string.ui_inspector_menu_stop_record, InteractionRecorder.capturedCount))
+            actions.add { stopRecordingAndInsert() }
+        } else {
+            labels.add(getString(R.string.ui_inspector_menu_start_record))
+            actions.add { startRecording() }
+        }
+        labels.add(getString(R.string.ui_inspector_menu_close))
+        actions.add { stopSelf() }
+
+        val dialog = MaterialAlertDialogBuilder(dialogContext)
+            .setTitle(R.string.ui_inspector_menu_title)
+            .setItems(labels.toTypedArray()) { _, which ->
+                actions.getOrNull(which)?.invoke()
+            }
+            .create()
+        dialog.window?.setType(overlayWindowType)
+        dialog.show()
+    }
+
+    private fun startRecording() {
+        InteractionRecorder.startRecording()
+        refreshCurrentProbeCoordinate()
+        Toast.makeText(this, getString(R.string.ui_inspector_record_started), Toast.LENGTH_LONG).show()
+    }
+
+    private fun stopRecordingAndInsert() {
+        val count = InteractionRecorder.stopRecording()
+        refreshCurrentProbeCoordinate()
+
+        if (count == 0) {
+            Toast.makeText(this, getString(R.string.ui_inspector_record_empty), Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!enableWorkflowInsert) {
+            Toast.makeText(this, getString(R.string.ui_inspector_record_need_editor), Toast.LENGTH_LONG).show()
+            return
+        }
+        sendInsertRequest(WorkflowInspectorInsertRequest.recordedSteps(count))
     }
 
     // --- 弹窗显示逻辑 ---
 
     private fun showNodeDetails() {
-        val node = currentNodeInfo ?: run {
+        val inspect = currentInspect ?: run {
             Toast.makeText(this, getString(R.string.ui_inspector_no_selection), Toast.LENGTH_SHORT).show()
             return
         }
 
-        val items = collectNodeInfo(node)
+        val items = collectNodeInfo(inspect)
 
         val dialogContext = ThemeUtils.createThemedContext(
             ServiceStateBus.getAccessibilityService() ?: this
@@ -485,7 +584,7 @@ class UiInspectorService : Service() {
         if (enableWorkflowInsert) {
             builder.setCustomTitle(
                 createDialogTitleView(dialogContext, getString(R.string.ui_inspector_properties_title)) {
-                    sendInsertRequest(buildClickInsertRequest(node))
+                    sendInsertRequest(buildBestInsertRequest(inspect))
                     dialog.dismiss()
                 }
             )
@@ -500,10 +599,10 @@ class UiInspectorService : Service() {
         dialog.show()
     }
 
-    private fun collectNodeInfo(node: AccessibilityNodeInfo): List<InspectorItem> {
+    private fun collectNodeInfo(inspect: InspectResult): List<InspectorItem> {
         val list = mutableListOf<InspectorItem>()
-        val rect = Rect()
-        node.getBoundsInScreen(rect)
+        val node = inspect.target
+        val rect = inspect.bounds
         refreshCurrentProbeCoordinate()
 
         val packageName = node.packageName?.toString() ?: getString(R.string.ui_inspector_unknown)
@@ -523,7 +622,6 @@ class UiInspectorService : Service() {
         )
         val controlId = node.viewIdResourceName ?: getString(R.string.ui_inspector_none)
         val controlText = node.text?.toString() ?: ""
-        val gkdSelector = generateGkdSelector(node)
         val topLeftCoordinate = "${rect.left},${rect.top}"
         val bottomRightCoordinate = "${rect.right},${rect.bottom}"
         val centerCoordinate = "${rect.centerX()},${rect.centerY()}"
@@ -536,7 +634,48 @@ class UiInspectorService : Service() {
         list.add(InspectorItem.Property(getString(R.string.ui_inspector_control_id), controlId, buildClickInsertRequest(controlId)))
         list.add(InspectorItem.Property(getString(R.string.ui_inspector_control_text), controlText, buildFindTextInsertRequest(controlText)))
         list.add(InspectorItem.Property(getString(R.string.ui_inspector_control_type), node.className?.toString() ?: getString(R.string.ui_inspector_unknown)))
-        list.add(InspectorItem.Property(getString(R.string.ui_inspector_gkd_selector), gkdSelector, buildUiSelectorInsertRequest(gkdSelector)))
+
+        // 选择器候选：按「越稳越靠前」排序，长按某一行即可把选择器插入工作流
+        list.add(InspectorItem.Header(getString(R.string.ui_inspector_selector_candidates)))
+        if (inspect.candidates.isEmpty()) {
+            list.add(
+                InspectorItem.Property(
+                    getString(R.string.ui_inspector_no_candidate),
+                    getString(R.string.ui_inspector_no_candidate_hint)
+                )
+            )
+        } else {
+            if (inspect.sameKeyCount > 1) {
+                list.add(
+                    InspectorItem.Property(
+                        getString(R.string.ui_inspector_duplicate_notice),
+                        getString(R.string.ui_inspector_duplicate_count, inspect.sameKeyCount)
+                    )
+                )
+            }
+            if (inspect.clickableInChain) {
+                list.add(
+                    InspectorItem.Property(
+                        getString(R.string.ui_inspector_clickable_ancestor),
+                        inspect.clickNode.className?.toString() ?: getString(R.string.ui_inspector_unknown)
+                    )
+                )
+            }
+            inspect.candidates.forEach { candidate ->
+                val label = if (candidate.unique) {
+                    candidate.label
+                } else {
+                    "${candidate.label} · ${getString(R.string.ui_inspector_hit_count, candidate.hitCount)}"
+                }
+                list.add(
+                    InspectorItem.Property(
+                        label,
+                        candidate.selector,
+                        WorkflowInspectorInsertRequest.clickSelector(candidate.selector)
+                    )
+                )
+            }
+        }
 
         list.add(InspectorItem.Header(getString(R.string.ui_inspector_layout_coordinates)))
         list.add(InspectorItem.Property(getString(R.string.ui_inspector_current_coordinate), currentCoordinate, WorkflowInspectorInsertRequest.click(currentCoordinate)))
@@ -624,18 +763,22 @@ class UiInspectorService : Service() {
         return titleContainer
     }
 
-    private fun buildClickInsertRequest(node: AccessibilityNodeInfo): WorkflowInspectorInsertRequest {
-        return WorkflowInspectorInsertRequest.click(buildClickTarget(node))
+    /**
+     * 标题栏「插入点击」用哪个候选：
+     * 有唯一命中的选择器就用「选择器点击」两步（跨布局、跨分辨率可用），
+     * 一个都没有就退回中心坐标，至少能点。
+     */
+    private fun buildBestInsertRequest(inspect: InspectResult): WorkflowInspectorInsertRequest? {
+        val best = inspect.best
+        if (best != null && best.unique) {
+            return WorkflowInspectorInsertRequest.clickSelector(best.selector)
+        }
+        return WorkflowInspectorInsertRequest.click("${inspect.centerX},${inspect.centerY}")
     }
 
     private fun buildClickInsertRequest(target: String): WorkflowInspectorInsertRequest? {
         if (!isInsertableValue(target)) return null
         return WorkflowInspectorInsertRequest.click(target)
-    }
-
-    private fun buildUiSelectorInsertRequest(selector: String): WorkflowInspectorInsertRequest? {
-        if (!isInsertableValue(selector)) return null
-        return WorkflowInspectorInsertRequest.uiSelector(selector)
     }
 
     private fun buildFindTextInsertRequest(text: String): WorkflowInspectorInsertRequest? {
@@ -664,15 +807,6 @@ class UiInspectorService : Service() {
             }
         )
         Toast.makeText(this, R.string.ui_inspector_insert_request_sent, Toast.LENGTH_SHORT).show()
-    }
-
-    private fun buildClickTarget(node: AccessibilityNodeInfo): String {
-        val viewId = node.viewIdResourceName?.takeIf { it.isNotBlank() }
-        if (viewId != null) {
-            return viewId
-        }
-        refreshCurrentProbeCoordinate()
-        return "$currentProbeX,$currentProbeY"
     }
 
     private fun isInsertableValue(value: String?): Boolean {
@@ -832,136 +966,6 @@ class UiInspectorService : Service() {
         return depth
     }
 
-    /**
-     * 生成 GKD 选择器路径
-     * 根据 GKD 语法，从右往左匹配，父子关系由 A > B 建立，代表 A 是 B 的父节点。
-     * 支持跨越层级：A >2 B 代表 A 是 B 的祖父节点。
-     */
-    private fun generateGkdSelector(node: AccessibilityNodeInfo): String {
-        DebugLogger.d("GKDSelector", "开始生成选择器...")
-
-        // 存储提取到的有用节点与它们的层级深度
-        data class NodeItem(val selector: String, val depth: Int)
-        val items = mutableListOf<NodeItem>()
-
-        var currentNode: AccessibilityNodeInfo? = node
-        var depth = 0
-        var lastUsefulDepth = -1
-
-        // 向上遍历，收集有用节点并记录其与目标节点的层级深度
-        while (currentNode != null && depth < 8) {
-            val isTarget = depth == 0
-            val hasVid = !currentNode.viewIdResourceName.isNullOrBlank()
-            val hasText = !currentNode.text.isNullOrBlank() && currentNode.text.toString().isNotEmpty()
-            val hasDesc = !currentNode.contentDescription.isNullOrBlank() && currentNode.contentDescription.toString().isNotEmpty()
-
-            // 目标节点总是包含，其它节点仅当其带有唯一标识时才作为辅助路径包含
-            val isUseful = isTarget || hasVid || hasText || hasDesc
-
-            if (isUseful) {
-                val nodeSelector = buildConciseNodeSelector(currentNode, isTarget)
-                items.add(NodeItem(nodeSelector, depth))
-                lastUsefulDepth = depth
-            }
-
-            currentNode = currentNode.parent
-            depth++
-
-            // 如果连续3层都没有有用节点，停止遍历
-            if (depth - lastUsefulDepth > 3) {
-                break
-            }
-        }
-
-        if (items.isEmpty()) return "*"
-        if (items.size == 1) return items[0].selector
-
-        // items 数组收集顺序是从底层(target)到顶层(ancestor)。
-        // 根据 GKD 规范，关系选择器是从左向右书写 (祖先 > 父级 > ... > 目标)，且从右向左匹配。
-        val reversedItems = items.reversed()
-        var result = reversedItems[0].selector
-        var currentDepth = reversedItems[0].depth
-
-        for (i in 1 until reversedItems.size) {
-            val next = reversedItems[i]
-            // 计算层级差值以准确表达 GKD 中的结构：> 代表直系父节点，>n 代表第 n 层祖先节点
-            val diff = currentDepth - next.depth
-            val operator = if (diff == 1) " > " else " >$diff "
-
-            result += operator + next.selector
-            currentDepth = next.depth
-        }
-
-        DebugLogger.d("GKDSelector", "生成选择器: $result")
-        return result
-    }
-
-    /**
-     * 为节点构建简洁的选择器
-     * 根据 GKD 快速查询优化：包含 vid/text 属性可优化检索性能。
-     * @param isTarget 是否是目标节点
-     */
-    private fun buildConciseNodeSelector(node: AccessibilityNodeInfo, isTarget: Boolean): String {
-        val attrs = mutableListOf<String>()
-
-        // 获取简单类名（如 TextView, FrameLayout）
-        val className = node.className?.toString() ?: "*"
-        val simpleClassName = if (className.contains('.')) {
-            className.substringAfterLast('.')
-        } else {
-            className
-        }
-
-        // 优先处理 vid，以便符合快速查询规则
-        val viewId = node.viewIdResourceName
-        if (!viewId.isNullOrBlank()) {
-            val shortVid = if (viewId.contains(":id/")) {
-                viewId.substringAfter(":id/")
-            } else if (viewId.contains("/id/")) {
-                viewId.substringAfter("/id/")
-            } else {
-                viewId.substringAfterLast("/")
-            }
-            attrs.add("vid='${escapeGkdString(shortVid)}'")
-        }
-
-        // 其次添加 text
-        val text = node.text?.toString()
-        if (!text.isNullOrBlank() && text.length <= 30) {
-            attrs.add("text='${escapeGkdString(text)}'")
-        }
-
-        // 最后添加 desc
-        val desc = node.contentDescription?.toString()
-        if (!desc.isNullOrBlank() && desc.length <= 30) {
-            attrs.add("desc='${escapeGkdString(desc)}'")
-        }
-
-        // 如果是目标节点且无明显标识，但可点击，补充 clickable 状态
-        if (isTarget && attrs.isEmpty() && node.isClickable) {
-            attrs.add("clickable=true")
-        }
-
-        // 组装选择器，各属性独立使用 [] 包裹（对应 GKD 中的 && 操作）
-        return if (attrs.isEmpty()) {
-            simpleClassName
-        } else {
-            val attrStr = attrs.joinToString("][")
-            "$simpleClassName[$attrStr]"
-        }
-    }
-
-    /**
-     * 转义 GKD 选择器字符串中的特殊字符
-     */
-    private fun escapeGkdString(str: String): String {
-        return str
-            .replace("\\", "\\\\")
-            .replace("'", "\\'")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-    }
 
     override fun onDestroy() {
         super.onDestroy()

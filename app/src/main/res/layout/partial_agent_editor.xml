@@ -10,79 +10,64 @@
     <TextView
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="@string/label_model_config"
+        android:text="@string/label_ai_model_source"
         android:textAppearance="?attr/textAppearanceLabelLarge" />
 
+    <!-- 模型预设由代码按「AI 对话」里已保存的配置动态生成，末尾固定一个「自定义」 -->
     <com.google.android.material.chip.ChipGroup
-        android:id="@+id/cg_provider"
+        android:id="@+id/cg_preset"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
         app:singleSelection="true"
-        app:selectionRequired="true">
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chip_dashscope"
-            style="@style/Widget.Material3.Chip.Filter"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/text_alibaba_cloud" />
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chip_bigmodel"
-            style="@style/Widget.Material3.Chip.Filter"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/text_zhipu" />
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chip_custom"
-            style="@style/Widget.Material3.Chip.Filter"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/text_custom" />
-    </com.google.android.material.chip.ChipGroup>
+        app:selectionRequired="true" />
 
-    <LinearLayout
+    <TextView
+        android:id="@+id/tv_preset_hint"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="8dp">
-
-        <com.google.android.material.textfield.TextInputLayout
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:layout_marginEnd="8dp"
-            android:hint="Base URL">
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/et_base_url"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:inputType="textUri" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <com.google.android.material.textfield.TextInputLayout
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:hint="@string/hint_model_name">
-            <com.google.android.material.textfield.TextInputEditText
-                android:id="@+id/et_model"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
-        </com.google.android.material.textfield.TextInputLayout>
-    </LinearLayout>
+        android:layout_marginTop="6dp"
+        android:text="@string/hint_ai_preset_empty"
+        android:textAppearance="?attr/textAppearanceBodySmall"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        android:visibility="gone" />
 
     <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/til_base_url"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:hint="API Base URL">
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/et_base_url"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textUri" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/til_api_key"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:hint="API Key">
+        android:hint="API Key (sk-...)">
         <com.google.android.material.textfield.TextInputEditText
             android:id="@+id/et_api_key"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:inputType="textPassword" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/til_model"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="@string/hint_model_name">
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/et_model"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
     </com.google.android.material.textfield.TextInputLayout>
 
     <com.google.android.material.divider.MaterialDivider
