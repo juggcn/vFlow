@@ -2,6 +2,7 @@ package com.chaomixian.vflow.ui.workflow_list
 
 import android.os.SystemClock
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +52,7 @@ import androidx.compose.material3.DropdownMenuPopup
 import androidx.compose.material3.ContainedLoadingIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +62,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -74,6 +77,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -156,9 +160,29 @@ fun WorkflowListScreen(
     val scope = rememberCoroutineScope()
     val isSearching = normalizedQuery.isNotBlank()
     var showLoadingCard by remember { mutableStateOf(false) }
+
+    // 顶部文件夹筛选，null 表示显示全部
+    var folderFilter by rememberSaveable { mutableStateOf<String?>(null) }
+    val folderItems = displayItems.filterIsInstance<WorkflowListItem.FolderItem>()
+    val selectedFolder = folderItems.firstOrNull { it.folder.id == folderFilter }
+
+    // 选中的文件夹被删掉后自动退回「全部」，否则列表会空着且没有任何提示
+    LaunchedEffect(folderFilter, folderItems.size) {
+        if (folderFilter != null && selectedFolder == null) {
+            folderFilter = null
+        }
+    }
+
+    // 只查看某个文件夹时，列表内容就是该文件夹里的工作流（与文件夹弹窗内的顺序一致）
+    val baseItems: List<WorkflowListItem> = selectedFolder?.let { folder ->
+        folder.childWorkflows
+            .sortedBy { it.order }
+            .map { workflow -> WorkflowListItem.WorkflowItem(workflow) }
+    } ?: displayItems
+
     val filteredItems = if (isSearching) {
         buildList {
-            displayItems.forEach { item ->
+            baseItems.forEach { item ->
                 when (item) {
                     is WorkflowListItem.WorkflowItem -> {
                         if (matchesSearch(normalizedQuery, item.workflow.name, item.workflow.description)) {
@@ -180,7 +204,7 @@ fun WorkflowListScreen(
             }
         }
     } else {
-        displayItems
+        baseItems
     }
 
     LaunchedEffect(uiState.items) {
@@ -270,6 +294,9 @@ fun WorkflowListScreen(
                 searchQuery = searchQuery,
                 onSearchQueryChange = { searchQuery = it },
                 isSearching = isSearching,
+                folderItems = folderItems,
+                selectedFolderId = folderFilter,
+                onFolderFilterChange = { folderFilter = it },
                 showLoadingCard = showLoadingCard,
                 extraBottomPadding = extraBottomPadding,
                 focusManager = focusManager,
@@ -296,14 +323,23 @@ fun WorkflowListScreen(
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             item {
-                SearchBarCard(
-                    value = searchQuery,
-                    onValueChange = { searchQuery = it },
-                    placeholderRes = R.string.workflow_search_placeholder,
-                    clearContentDescriptionRes = R.string.workflow_search_clear,
-                    onClearFocus = { focusManager.clearFocus() },
-                    modifier = Modifier.padding(horizontal = 16.dp)
-                )
+                Column {
+                    SearchBarCard(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholderRes = R.string.workflow_search_placeholder,
+                        clearContentDescriptionRes = R.string.workflow_search_clear,
+                        onClearFocus = { focusManager.clearFocus() },
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                    FolderFilterRow(
+                        folders = folderItems,
+                        selectedFolderId = folderFilter,
+                        onSelect = { folderFilter = it },
+                        horizontalPadding = 16.dp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
             }
 
             if (showLoadingCard) {
@@ -386,7 +422,8 @@ fun WorkflowListScreen(
                                     )
                                 }
                             }
-                            if (isSearching) {
+                            // 搜索或按文件夹筛选时列表不是完整顺序，禁用拖动重排
+                            if (isSearching || selectedFolder != null) {
                                 WorkflowCard(
                                     workflow = workflow,
                                     executionStateVersion = uiState.executionStateVersion,
@@ -535,6 +572,92 @@ private fun WorkflowLoadingState(modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * 顶部文件夹筛选条：「全部」加每个文件夹一个 chip。
+ * 用 FlowRow 自动换行，一行放不下就折到下一行，不做横向滚动，保证全部可见。
+ * 一个文件夹都没有时整条不占位。
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun FolderFilterRow(
+    folders: List<WorkflowListItem.FolderItem>,
+    selectedFolderId: String?,
+    onSelect: (String?) -> Unit,
+    modifier: Modifier = Modifier,
+    horizontalPadding: Dp = 16.dp
+) {
+    if (folders.isEmpty()) return
+
+    // 默认展开：文件夹全部铺开，需要时手动收起
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    // 收起时只保留「全部」和当前选中的那个，其余靠「展开」按钮找回来
+    val visibleFolders = if (expanded) {
+        folders
+    } else {
+        folders.filter { it.folder.id == selectedFolderId }
+    }
+    val hiddenCount = folders.size - visibleFolders.size
+
+    FlowRow(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = horizontalPadding),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp)
+    ) {
+        FilterChip(
+            selected = selectedFolderId == null,
+            onClick = { onSelect(null) },
+            label = {
+                Text(
+                    text = stringResource(R.string.workflow_filter_all),
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        )
+        visibleFolders.forEach { item ->
+            FilterChip(
+                selected = selectedFolderId == item.folder.id,
+                onClick = { onSelect(item.folder.id) },
+                label = {
+                    Text(
+                        text = stringResource(
+                            R.string.workflow_filter_folder_label,
+                            item.folder.name,
+                            item.workflowCount
+                        ),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        painter = painterResource(R.drawable.ic_folder),
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            )
+        }
+        // 只有一个文件夹时收起没有意义，不显示开关
+        if (folders.size > 1) {
+            TextButton(
+                onClick = { expanded = !expanded },
+                contentPadding = PaddingValues(horizontal = 10.dp)
+            ) {
+                Text(
+                    text = if (expanded) {
+                        stringResource(R.string.workflow_filter_collapse)
+                    } else {
+                        stringResource(R.string.workflow_filter_expand, hiddenCount)
+                    },
+                    style = MaterialTheme.typography.labelMedium
+                )
+            }
+        }
+    }
+}
+
+
 @OptIn(
     ExperimentalFoundationApi::class,
     ExperimentalLayoutApi::class,
@@ -576,14 +699,14 @@ fun WorkflowCard(
 
     Card(
         modifier = modifier
-            .padding(start = 12.dp, top = 6.dp, end = 12.dp, bottom = 6.dp)
+            .padding(start = 12.dp, top = 2.dp, end = 12.dp, bottom = 2.dp)
             .graphicsLayer {
                 if (isDragging) {
                     scaleX = 1.02f
                     scaleY = 1.02f
                 }
             },
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(18.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = if (isDragging) 8.dp else 0.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (colorfulCardsEnabled) {
@@ -593,12 +716,14 @@ fun WorkflowCard(
             }
         )
     ) {
+        // 两行布局：标题行右侧放收藏 / 执行 / 更多，第二行只留 chips。
+        // 原来底部单独一行操作区（48dp）是卡片过高的主因。
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(onClick = onOpenWorkflow)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Column(modifier = Modifier.then(dragHandleModifier)) {
                 Row(
@@ -607,9 +732,9 @@ fun WorkflowCard(
                 ) {
                     if (colorfulCardsEnabled) {
                         Surface(
-                            modifier = Modifier.size(40.dp),
+                            modifier = Modifier.size(30.dp),
                             color = Color(visualColors.iconBackground),
-                            shape = RoundedCornerShape(14.dp)
+                            shape = RoundedCornerShape(9.dp)
                         ) {
                             Icon(
                                 painter = painterResource(
@@ -617,26 +742,139 @@ fun WorkflowCard(
                                 ),
                                 contentDescription = null,
                                 tint = Color(visualColors.iconTint),
-                                modifier = Modifier.padding(9.dp)
+                                modifier = Modifier.padding(6.dp)
                             )
                         }
-                        SpacerWidth(12.dp)
+                        SpacerWidth(8.dp)
                     }
 
                     Text(
                         text = workflow.name,
                         modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleLarge,
-                        maxLines = 2
+                        style = MaterialTheme.typography.bodyLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
 
-                    Box {
-                        IconButton(onClick = { menuExpanded = true }) {
-                            Icon(
-                                painter = painterResource(R.drawable.ic_more_vert),
-                                contentDescription = stringResource(R.string.workflow_item_more_options)
+                    // 收藏
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .clickable(onClick = onToggleFavorite),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(
+                                if (workflow.isFavorite) R.drawable.ic_star else R.drawable.ic_star_border
+                            ),
+                            contentDescription = stringResource(R.string.workflow_item_favorite),
+                            tint = if (workflow.isFavorite) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    // 自动触发用开关，纯手动触发给一个执行按钮（长按选延迟执行）
+                    if (hasAutoTriggers) {
+                        Switch(
+                            checked = workflow.isEnabled,
+                            onCheckedChange = onToggleEnabled,
+                            colors = workflowSwitchColors(
+                                colorfulCardsEnabled = colorfulCardsEnabled,
+                                visualColors = visualColors
                             )
+                        )
+                    }
+
+                    if (isManualTrigger && !hasAutoTriggers) {
+                        Box {
+                            Surface(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .combinedClickable(
+                                        onClick = onExecuteWorkflow,
+                                        onLongClick = { delayedMenuExpanded = true }
+                                    ),
+                                color = if (colorfulCardsEnabled) {
+                                    Color(visualColors.accentBackground)
+                                } else {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(
+                                    painter = painterResource(
+                                        if (isRunning) R.drawable.rounded_pause_fill_24
+                                        else R.drawable.rounded_play_arrow_fill_24
+                                    ),
+                                    contentDescription = stringResource(R.string.workflow_item_execute),
+                                    tint = if (colorfulCardsEnabled) {
+                                        Color(visualColors.iconTint)
+                                    } else {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    },
+                                    modifier = Modifier.padding(7.dp)
+                                )
+                            }
+                            DropdownMenuPopup(
+                                expanded = delayedMenuExpanded,
+                                onDismissRequest = { delayedMenuExpanded = false }
+                            ) {
+                                DropdownMenuGroup(
+                                    shapes = MenuDefaults.groupShape(index = 0, count = 1),
+                                    modifier = Modifier
+                                        .width(IntrinsicSize.Max)
+                                        .widthIn(min = 132.dp, max = 180.dp),
+                                    containerColor = MenuDefaults.groupStandardContainerColor,
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(vertical = 10.dp)
+                                    ) {
+                                        WorkflowPlainMenuItem(
+                                            text = stringResource(R.string.workflow_execute_delay_5s),
+                                            onClick = {
+                                                delayedMenuExpanded = false
+                                                onExecuteWorkflowDelayed(5_000L)
+                                            }
+                                        )
+                                        WorkflowPlainMenuItem(
+                                            text = stringResource(R.string.workflow_execute_delay_15s),
+                                            onClick = {
+                                                delayedMenuExpanded = false
+                                                onExecuteWorkflowDelayed(15_000L)
+                                            }
+                                        )
+                                        WorkflowPlainMenuItem(
+                                            text = stringResource(R.string.workflow_execute_delay_1min),
+                                            onClick = {
+                                                delayedMenuExpanded = false
+                                                onExecuteWorkflowDelayed(60_000L)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
+                    }
+
+                    // 图标按钮自带 48dp 最小触摸区，会把整行撑高，这里用 Box 自己控制尺寸
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .clickable { menuExpanded = true },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_more_vert),
+                            contentDescription = stringResource(R.string.workflow_item_more_options),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
                         DropdownMenuPopup(
                             expanded = menuExpanded,
                             onDismissRequest = { menuExpanded = false }
@@ -688,8 +926,9 @@ fun WorkflowCard(
                 }
 
                 FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     if (missingPermissions.isNotEmpty()) {
                         WorkflowChip(
@@ -731,105 +970,6 @@ fun WorkflowCard(
                     }
                 }
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onToggleFavorite) {
-                    Icon(
-                        painter = painterResource(
-                            if (workflow.isFavorite) R.drawable.ic_star else R.drawable.ic_star_border
-                        ),
-                        contentDescription = stringResource(R.string.workflow_item_favorite),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                if (hasAutoTriggers) {
-                    Switch(
-                        checked = workflow.isEnabled,
-                        onCheckedChange = onToggleEnabled,
-                        colors = workflowSwitchColors(
-                            colorfulCardsEnabled = colorfulCardsEnabled,
-                            visualColors = visualColors
-                        )
-                    )
-                }
-
-                if (isManualTrigger && !hasAutoTriggers) {
-                    Box {
-                        Surface(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .combinedClickable(
-                                    onClick = onExecuteWorkflow,
-                                    onLongClick = { delayedMenuExpanded = true }
-                                ),
-                            color = if (colorfulCardsEnabled) {
-                                Color(visualColors.accentBackground)
-                            } else {
-                                MaterialTheme.colorScheme.primaryContainer
-                            },
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            Icon(
-                                painter = painterResource(
-                                    if (isRunning) R.drawable.rounded_pause_fill_24
-                                    else R.drawable.rounded_play_arrow_fill_24
-                                ),
-                                contentDescription = stringResource(R.string.workflow_item_execute),
-                                tint = if (colorfulCardsEnabled) {
-                                    Color(visualColors.iconTint)
-                                } else {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                },
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                        DropdownMenuPopup(
-                            expanded = delayedMenuExpanded,
-                            onDismissRequest = { delayedMenuExpanded = false }
-                        ) {
-                            DropdownMenuGroup(
-                                shapes = MenuDefaults.groupShape(index = 0, count = 1),
-                                modifier = Modifier
-                                    .width(IntrinsicSize.Max)
-                                    .widthIn(min = 132.dp, max = 180.dp),
-                                containerColor = MenuDefaults.groupStandardContainerColor,
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(vertical = 10.dp)
-                                ) {
-                                    WorkflowPlainMenuItem(
-                                        text = stringResource(R.string.workflow_execute_delay_5s),
-                                        onClick = {
-                                            delayedMenuExpanded = false
-                                            onExecuteWorkflowDelayed(5_000L)
-                                        }
-                                    )
-                                    WorkflowPlainMenuItem(
-                                        text = stringResource(R.string.workflow_execute_delay_15s),
-                                        onClick = {
-                                            delayedMenuExpanded = false
-                                            onExecuteWorkflowDelayed(15_000L)
-                                        }
-                                    )
-                                    WorkflowPlainMenuItem(
-                                        text = stringResource(R.string.workflow_execute_delay_1min),
-                                        onClick = {
-                                            delayedMenuExpanded = false
-                                            onExecuteWorkflowDelayed(60_000L)
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -847,11 +987,11 @@ private fun FolderCard(
     Card(
         modifier = modifier.padding(
             start = horizontalPadding,
-            top = 6.dp,
+            top = 2.dp,
             end = horizontalPadding,
-            bottom = 6.dp
+            bottom = 2.dp
         ),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceContainerLow
         )
@@ -860,31 +1000,37 @@ private fun FolderCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .combinedClickable(onClick = { actions.onOpenFolder(folder.id) })
-                .padding(16.dp),
+                .padding(start = 12.dp, top = 8.dp, end = 4.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 painter = painterResource(R.drawable.ic_folder),
                 contentDescription = stringResource(R.string.folder_icon),
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(32.dp)
+                modifier = Modifier.size(22.dp)
             )
-            SpacerWidth(12.dp)
+            SpacerWidth(10.dp)
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = folder.name, style = MaterialTheme.typography.titleLarge, maxLines = 1)
+                Text(text = folder.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
                 Text(
                     text = stringResource(R.string.folder_workflow_count, workflowCount),
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Box {
-                IconButton(onClick = { menuExpanded = true }) {
-                    Icon(
-                        painter = painterResource(R.drawable.ic_more_vert),
-                        contentDescription = stringResource(R.string.workflow_item_more_options)
-                    )
-                }
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable { menuExpanded = true },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_more_vert),
+                    contentDescription = stringResource(R.string.workflow_item_more_options),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
                 DropdownMenuPopup(
                     expanded = menuExpanded,
                     onDismissRequest = { menuExpanded = false }
@@ -1072,6 +1218,9 @@ private fun WorkflowGridContent(
     searchQuery: String,
     onSearchQueryChange: (String) -> Unit,
     isSearching: Boolean,
+    folderItems: List<WorkflowListItem.FolderItem>,
+    selectedFolderId: String?,
+    onFolderFilterChange: (String?) -> Unit,
     showLoadingCard: Boolean,
     extraBottomPadding: Dp,
     focusManager: FocusManager,
@@ -1099,14 +1248,23 @@ private fun WorkflowGridContent(
         verticalArrangement = Arrangement.spacedBy(0.dp)
     ) {
         item(span = { GridItemSpan(columnCount) }) {
-            SearchBarCard(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                placeholderRes = R.string.workflow_search_placeholder,
-                clearContentDescriptionRes = R.string.workflow_search_clear,
-                onClearFocus = { focusManager.clearFocus() },
-                modifier = Modifier.padding(horizontal = 8.dp)
-            )
+            Column {
+                SearchBarCard(
+                    value = searchQuery,
+                    onValueChange = onSearchQueryChange,
+                    placeholderRes = R.string.workflow_search_placeholder,
+                    clearContentDescriptionRes = R.string.workflow_search_clear,
+                    onClearFocus = { focusManager.clearFocus() },
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+                FolderFilterRow(
+                    folders = folderItems,
+                    selectedFolderId = selectedFolderId,
+                    onSelect = onFolderFilterChange,
+                    horizontalPadding = 8.dp,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
         }
 
         if (showLoadingCard) {
@@ -1195,7 +1353,8 @@ private fun WorkflowGridContent(
                                 )
                             }
                         }
-                        if (isSearching) {
+                        // 搜索或按文件夹筛选时禁用拖动重排
+                        if (isSearching || selectedFolderId != null) {
                             WorkflowCardCompact(
                                 workflow = workflow,
                                 executionStateVersion = uiState.executionStateVersion,
@@ -1396,7 +1555,7 @@ private fun WorkflowCardCompact(
                     Text(
                         text = workflow.name,
                         modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.titleLarge,
+                        style = MaterialTheme.typography.bodyLarge,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
