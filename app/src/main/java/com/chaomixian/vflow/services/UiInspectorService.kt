@@ -288,8 +288,10 @@ class UiInspectorService : Service() {
         /** 按住到时长就算长按，不必等松开；松手时靠它把短按吞掉 */
         var longPressTriggered = false
         val LONG_PRESS_TIMEOUT = 500L // 长按阈值（毫秒）
+        val CLOSE_HOLD_TIMEOUT = 2000L // 按住这个时长直接关闭检查器（毫秒）
 
         val longPressRunnable = Runnable { longPressTriggered = true }
+        val closeRunnable = Runnable { closeInspector() }
 
         floatIconView?.setOnTouchListener { _, event ->
             when (event.action) {
@@ -301,6 +303,7 @@ class UiInspectorService : Service() {
                     isDragging = false
                     longPressTriggered = false
                     floatIconView?.postDelayed(longPressRunnable, LONG_PRESS_TIMEOUT)
+                    floatIconView?.postDelayed(closeRunnable, CLOSE_HOLD_TIMEOUT)
 
                     val service = ServiceStateBus.getAccessibilityService()
                     if (service != null) {
@@ -315,6 +318,8 @@ class UiInspectorService : Service() {
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
+                    // 已经因为长按满 2 秒被收掉了，这一串触摸就不用再处理
+                    if (floatIconView?.isAttachedToWindow != true) return@setOnTouchListener true
                     val dx = (event.rawX - initialTouchX).toInt()
                     val dy = (event.rawY - initialTouchY).toInt()
 
@@ -322,6 +327,7 @@ class UiInspectorService : Service() {
                         isDragging = true
                         // 一旦开始拖动就不再算长按，拖动过程中不该被判定成按住不放
                         floatIconView?.removeCallbacks(longPressRunnable)
+                        floatIconView?.removeCallbacks(closeRunnable)
                     }
 
                     iconParams.x = initialX + dx
@@ -333,9 +339,10 @@ class UiInspectorService : Service() {
                 }
                 MotionEvent.ACTION_UP -> {
                     floatIconView?.removeCallbacks(longPressRunnable)
+                    floatIconView?.removeCallbacks(closeRunnable)
                     flushPendingInspection()
                     if (!isDragging && !longPressTriggered) {
-                        // 短按：显示详情。长按什么都不做，也不再弹菜单
+                        // 短按：显示详情。按住 0.5～2 秒算长按，只吞掱短按；守住满 2 秒则由 closeRunnable 关掉检查器
                         inspectCurrentIconCenter()
                         showNodeDetails()
                     }
@@ -344,6 +351,7 @@ class UiInspectorService : Service() {
                 }
                 MotionEvent.ACTION_CANCEL -> {
                     floatIconView?.removeCallbacks(longPressRunnable)
+                    floatIconView?.removeCallbacks(closeRunnable)
                     currentRoots = emptyList()
                     true
                 }
@@ -358,6 +366,17 @@ class UiInspectorService : Service() {
         } catch (e: Exception) {
             Toast.makeText(this, getString(R.string.ui_inspector_float_permission_error), Toast.LENGTH_LONG).show()
         }
+    }
+
+    /**
+     * 长按满 2 秒直接关掉检查器。
+     *
+     * 退出菜单已经去掉了，图标上只剩「短按看详情」一个手势，
+     * 留个按住不放就能收摊的出口，免得只能绕回详情弹窗里点「关闭服务」。
+     */
+    private fun closeInspector() {
+        DebugLogger.d("UiInspector", "长按已满 2 秒，关闭检查器")
+        stopSelf()
     }
 
     private fun inspectCurrentIconCenter() {
