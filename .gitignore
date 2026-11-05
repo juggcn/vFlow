@@ -24,6 +24,9 @@ debug-signing.properties
 .claude/
 .codex/
 
+# WorkBuddy 本地工作记忆
+.workbuddy/
+
 # Release builds and modules
 /release/
 /application.backup

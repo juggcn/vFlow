@@ -226,6 +226,7 @@ object ModuleRegistry {
         // 应用集成
         register(FlClashModule(), context)
         register(ClashMetaModule(), context)
+        register(MainTrendModule(), context)
         register(IThomeCheckInModule(), context)
         register(AlipayShortcutsModule(), context)
         register(WeChatShortcutsModule(), context)

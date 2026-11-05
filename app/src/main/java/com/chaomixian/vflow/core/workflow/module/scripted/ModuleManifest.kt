@@ -20,7 +20,12 @@ data class ModuleManifest(
     val version: String = "Unknown",
     val inputs: List<JsonInput>? = null,   // 改为可空
     val outputs: List<JsonOutput>? = null, // 改为可空
-    val permissions: List<String>? = null  // 改为可空
+    val permissions: List<String>? = null, // 改为可空
+    /**
+     * 步骤卡片摘要模板，用 `{输入id}` 引用参数，如 "{codes} · {period}"。
+     * 为空时回退到默认摘要（模块名 + 前 3 个可见输入）。
+     */
+    val summary: String? = null
 )
 
 /**

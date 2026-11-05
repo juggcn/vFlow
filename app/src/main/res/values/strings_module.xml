@@ -3349,4 +3349,14 @@
     <string name="option_vflow_gkd_enable_all">全部规则（推荐）</string>
     <string name="option_vflow_gkd_enable_subscription_default">仅订阅默认启用</string>
     <string name="hint_vflow_gkd_enable_mode">社区 GKD 订阅一般只把「开屏广告」设为默认启用，全屏广告、局部广告、更新提示等组的 enable 都是 false，要靠用户在 GKD 客户端里逐组手动打开。vFlow 没有这套组开关界面，选「仅订阅默认启用」会丢掉绝大部分广告规则；「全部规则」忽略订阅里的默认开关，把规则全部载入。</string>
+    <string name="option_vflow_integration_main_trend_period_5">5分钟</string>
+    <string name="option_vflow_integration_main_trend_period_15">15分钟</string>
+    <string name="option_vflow_integration_main_trend_period_30">30分钟</string>
+    <string name="option_vflow_integration_main_trend_period_60">60分钟</string>
+    <string name="option_vflow_integration_main_trend_period_day">日线</string>
+    <string name="option_vflow_integration_main_trend_period_week">周线</string>
+    <string name="option_vflow_integration_main_trend_source_auto">自动</string>
+    <string name="option_vflow_integration_main_trend_source_tencent">腾讯</string>
+    <string name="option_vflow_integration_main_trend_source_eastmoney">东方财富</string>
+    <string name="option_vflow_integration_main_trend_source_sina">新浪</string>
 </resources>

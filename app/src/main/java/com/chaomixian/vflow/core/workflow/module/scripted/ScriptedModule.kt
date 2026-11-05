@@ -73,16 +73,72 @@ class ScriptedModule(
     }
 
     override fun getSummary(context: Context, step: ActionStep): CharSequence {
-        val firstInput = getInputs().firstOrNull()
-        return if (firstInput != null) {
-            val pill = PillUtil.createPillFromParam(
-                step.parameters[firstInput.id],
-                firstInput
-            )
-            PillUtil.buildSpannable(context, "${manifest.name} ", pill)
-        } else {
-            manifest.name
+        // manifest 给了模板就按模板渲染，否则走默认摘要
+        val template = manifest.summary
+        if (!template.isNullOrBlank()) {
+            return renderSummaryTemplate(context, step, template)
         }
+
+        val inputs = getInputs().filterNot { it.isHidden }.take(3)
+        if (inputs.isEmpty()) return manifest.name
+
+        val parts = mutableListOf<Any?>(manifest.name, " ")
+        inputs.forEachIndexed { index, inputDef ->
+            if (index > 0) parts.add(" · ")
+            parts.add(
+                PillUtil.createPillFromParam(
+                    collapseMultiline(step.parameters[inputDef.id]),
+                    inputDef
+                )
+            )
+        }
+        return PillUtil.buildSpannable(context, *parts.toTypedArray())
+    }
+
+    /** 按 manifest.summary 模板渲染，`{输入id}` 替换成对应参数的药丸，`{name}` 是模块名。 */
+    private fun renderSummaryTemplate(
+        context: Context,
+        step: ActionStep,
+        template: String
+    ): CharSequence {
+        val inputsById = getInputs().associateBy { it.id }
+        val parts = mutableListOf<Any?>()
+        var cursor = 0
+
+        for (match in Regex("\\{([^{}]+)\\}").findAll(template)) {
+            if (match.range.first > cursor) {
+                parts.add(template.substring(cursor, match.range.first))
+            }
+            val key = match.groupValues[1]
+            val inputDef = inputsById[key]
+            when {
+                inputDef != null -> parts.add(
+                    PillUtil.createPillFromParam(
+                        collapseMultiline(step.parameters[inputDef.id]),
+                        inputDef
+                    )
+                )
+                key == "name" -> parts.add(manifest.name)
+                // 模板写错时原样保留，方便排查
+                else -> parts.add(match.value)
+            }
+            cursor = match.range.last + 1
+        }
+        if (cursor < template.length) parts.add(template.substring(cursor))
+
+        return PillUtil.buildSpannable(context, *parts.toTypedArray())
+    }
+
+    /** 多行参数在摘要里只占一行：显示首行，其余折成「+N」。 */
+    private fun collapseMultiline(value: Any?): Any? {
+        val text = when (value) {
+            is String -> value
+            is VString -> value.raw
+            is VObject -> value.asString()
+            else -> return value
+        }
+        val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        return if (lines.size > 1) "${lines.first()} +${lines.size - 1}" else text
     }
 
     override suspend fun execute(

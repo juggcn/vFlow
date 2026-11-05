@@ -93,6 +93,10 @@ android {
             )
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
+            } else if (hasDebugKeystore) {
+                // 没有正式 keystore 时回退到 debug 签名，保证产物可直接安装
+                println("ℹ️ Release 未配置正式签名，回退使用 debug.keystore")
+                signingConfig = signingConfigs.getByName("debug")
             } else {
                 println("⚠️ Release 签名文件未找到")
             }
