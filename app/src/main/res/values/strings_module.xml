@@ -614,13 +614,22 @@
 
     <!-- vflow.trigger.time -->
     <string name="module_vflow_trigger_time_name">定时触发</string>
-    <string name="module_vflow_trigger_time_desc">在指定的时间和日期触发工作流，类似闹钟</string>
+    <string name="module_vflow_trigger_time_desc">在指定时刻或时段内触发工作流，类似闹钟</string>
+    <string name="param_vflow_trigger_time_mode_name">触发方式</string>
+    <string name="option_vflow_trigger_time_mode_point">指定时刻</string>
+    <string name="option_vflow_trigger_time_mode_window">时段重复</string>
     <string name="param_vflow_trigger_time_time_name">触发时间</string>
+    <string name="param_vflow_trigger_time_windows_name">触发时段</string>
+    <string name="param_vflow_trigger_time_interval_name">时段内间隔</string>
     <string name="param_vflow_trigger_time_days_name">重复日期</string>
     <string name="summary_vflow_trigger_time_everyday">每天</string>
-    <string name="summary_vflow_trigger_time_once">单次</string>
     <string name="summary_vflow_trigger_time_workdays">工作日</string>
     <string name="summary_vflow_trigger_time_suffix"> 触发</string>
+    <string name="summary_vflow_trigger_time_every_minutes">每 %1$s 分钟</string>
+    <string name="summary_vflow_trigger_time_window_more"> 等 %1$s 个时段</string>
+    <string name="error_vflow_trigger_time_invalid">触发时间格式不正确</string>
+    <string name="error_vflow_trigger_time_window_invalid">请至少设置一个有效时段，且开始时间早于结束时间</string>
+    <string name="error_vflow_trigger_time_interval_invalid">时段内间隔必须大于 0 分钟</string>
     <string name="msg_vflow_trigger_time_triggered">定时任务已触发</string>
 
     <!-- vflow.trigger.interval -->
@@ -3359,4 +3368,6 @@
     <string name="option_vflow_integration_main_trend_source_tencent">腾讯</string>
     <string name="option_vflow_integration_main_trend_source_eastmoney">东方财富</string>
     <string name="option_vflow_integration_main_trend_source_sina">新浪</string>
+    <string name="option_vflow_network_mcp_client_action_call">调用工具</string>
+    <string name="option_vflow_network_mcp_client_action_list">列出工具</string>
 </resources>

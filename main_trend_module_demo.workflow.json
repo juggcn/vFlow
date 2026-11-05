@@ -1,0 +1,41 @@
+{
+  "id": "c9e5f3a4-7d86-4f0c-9e53-000000000003",
+  "name": "主趋势线监控（模块版）",
+  "description": "调用主趋势线监控模块，并把结果推成通知",
+  "isEnabled": true,
+  "version": "1.0.0",
+  "triggers": [
+    {
+      "moduleId": "vflow.trigger.time",
+      "parameters": {
+        "time": "15:05",
+        "days": [
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "step_trend",
+      "moduleId": "vflow.user.main_trend",
+      "parameters": {
+        "codes": "sh600000\nsz000001\nsh000001",
+        "period": "day",
+        "source": "auto"
+      }
+    },
+    {
+      "id": "step_notify",
+      "moduleId": "vflow.notification.send_notification",
+      "parameters": {
+        "title": "主趋势线 · {{step_trend.status}}",
+        "message": "{{step_trend.summary}}"
+      }
+    }
+  ]
+}

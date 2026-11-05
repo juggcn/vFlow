@@ -595,13 +595,22 @@
 
     <!-- vflow.trigger.time -->
     <string name="module_vflow_trigger_time_name">Timed Trigger</string>
-    <string name="module_vflow_trigger_time_desc">Trigger workflow at specified time and date, like an alarm clock</string>
+    <string name="module_vflow_trigger_time_desc">Trigger the workflow at a specific time, or repeatedly inside time windows</string>
+    <string name="param_vflow_trigger_time_mode_name">Trigger Mode</string>
+    <string name="option_vflow_trigger_time_mode_point">Exact Time</string>
+    <string name="option_vflow_trigger_time_mode_window">Time Windows</string>
     <string name="param_vflow_trigger_time_time_name">Trigger Time</string>
+    <string name="param_vflow_trigger_time_windows_name">Time Windows</string>
+    <string name="param_vflow_trigger_time_interval_name">Interval in Window</string>
     <string name="param_vflow_trigger_time_days_name">Repeat Days</string>
     <string name="summary_vflow_trigger_time_everyday">Daily</string>
-    <string name="summary_vflow_trigger_time_once">Once</string>
     <string name="summary_vflow_trigger_time_workdays">Workdays</string>
-    <string name="summary_vflow_trigger_time_suffix">trigger</string>
+    <string name="summary_vflow_trigger_time_suffix"> trigger</string>
+    <string name="summary_vflow_trigger_time_every_minutes">every %1$s min</string>
+    <string name="summary_vflow_trigger_time_window_more"> and %1$s window(s)</string>
+    <string name="error_vflow_trigger_time_invalid">Invalid trigger time format</string>
+    <string name="error_vflow_trigger_time_window_invalid">Set at least one valid window, and the start must be earlier than the end</string>
+    <string name="error_vflow_trigger_time_interval_invalid">Interval must be greater than 0 minutes</string>
     <string name="msg_vflow_trigger_time_triggered">Timed task triggered</string>
 
     <!-- vflow.trigger.interval -->
@@ -3356,4 +3365,6 @@
     <string name="option_vflow_integration_main_trend_source_tencent">Tencent</string>
     <string name="option_vflow_integration_main_trend_source_eastmoney">Eastmoney</string>
     <string name="option_vflow_integration_main_trend_source_sina">Sina</string>
+    <string name="option_vflow_network_mcp_client_action_call">Call tool</string>
+    <string name="option_vflow_network_mcp_client_action_list">List tools</string>
 </resources>

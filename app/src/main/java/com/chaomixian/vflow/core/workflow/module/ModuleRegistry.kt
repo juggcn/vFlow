@@ -171,6 +171,7 @@ object ModuleRegistry {
         // 网络
         register(GetIpAddressModule(), context)
         register(HttpRequestModule(), context)
+        register(McpClientModule(), context)
         register(BarkPushModule(), context)
         register(DiscordPushModule(), context)
         register(WebhookPushModule(), context)

@@ -113,4 +113,137 @@ class AlarmTriggerSchedulerTest {
 
         assertNull(next)
     }
+
+    // ---- 时段重复模式 ----
+
+    private fun windowTrigger(
+        id: String,
+        windows: List<String>,
+        intervalMinutes: Long = 10L,
+        days: List<Int> = listOf(
+            Calendar.SUNDAY,
+            Calendar.MONDAY,
+            Calendar.TUESDAY,
+            Calendar.WEDNESDAY,
+            Calendar.THURSDAY,
+            Calendar.FRIDAY,
+            Calendar.SATURDAY
+        )
+    ) = TriggerSpec(
+        workflow = Workflow(id = "workflow-$id", name = "Window $id"),
+        step = ActionStep(
+            id = id,
+            moduleId = "vflow.trigger.time",
+            parameters = mapOf(
+                "mode" to "window",
+                "windows" to windows,
+                "interval_minutes" to intervalMinutes,
+                "days" to days
+            )
+        )
+    )
+
+    private fun calendarAt(year: Int, month: Int, day: Int, hour: Int, minute: Int) =
+        Calendar.getInstance().apply {
+            set(year, month, day, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+
+    @Test
+    fun `window trigger aligns to grid instead of drifting from now`() {
+        // 2026-04-21 是周二
+        val now = calendarAt(2026, Calendar.APRIL, 21, 10, 3)
+        val next = AlarmTriggerScheduler.calculateNextTriggerTime(
+            windowTrigger("w1", listOf("09:30-11:30")),
+            now
+        )
+
+        assertNotNull(next)
+        assertEquals(10, next!!.get(Calendar.HOUR_OF_DAY))
+        assertEquals(10, next.get(Calendar.MINUTE))
+        assertEquals(0, next.get(Calendar.SECOND))
+    }
+
+    @Test
+    fun `window trigger does not fire before window start`() {
+        val now = calendarAt(2026, Calendar.APRIL, 21, 9, 0)
+        val next = AlarmTriggerScheduler.calculateNextTriggerTime(
+            windowTrigger("w2", listOf("09:30-11:30")),
+            now
+        )
+
+        assertNotNull(next)
+        assertEquals(9, next!!.get(Calendar.HOUR_OF_DAY))
+        assertEquals(30, next.get(Calendar.MINUTE))
+    }
+
+    @Test
+    fun `window trigger includes window end boundary`() {
+        val now = calendarAt(2026, Calendar.APRIL, 21, 11, 20)
+        val next = AlarmTriggerScheduler.calculateNextTriggerTime(
+            windowTrigger("w3", listOf("09:30-11:30")),
+            now
+        )
+
+        assertNotNull(next)
+        assertEquals(11, next!!.get(Calendar.HOUR_OF_DAY))
+        assertEquals(30, next.get(Calendar.MINUTE))
+    }
+
+    @Test
+    fun `window trigger jumps to the next window on the same day`() {
+        val now = calendarAt(2026, Calendar.APRIL, 21, 11, 45)
+        val next = AlarmTriggerScheduler.calculateNextTriggerTime(
+            windowTrigger("w4", listOf("09:30-11:30", "13:00-15:00")),
+            now
+        )
+
+        assertNotNull(next)
+        assertEquals(Calendar.TUESDAY, next!!.get(Calendar.DAY_OF_WEEK))
+        assertEquals(13, next.get(Calendar.HOUR_OF_DAY))
+        assertEquals(0, next.get(Calendar.MINUTE))
+    }
+
+    @Test
+    fun `window trigger advances to the next allowed weekday`() {
+        val now = calendarAt(2026, Calendar.APRIL, 21, 15, 10)
+        val next = AlarmTriggerScheduler.calculateNextTriggerTime(
+            windowTrigger("w5", listOf("13:00-15:00"), days = listOf(Calendar.WEDNESDAY)),
+            now
+        )
+
+        assertNotNull(next)
+        assertEquals(Calendar.WEDNESDAY, next!!.get(Calendar.DAY_OF_WEEK))
+        assertEquals(22, next.get(Calendar.DAY_OF_MONTH))
+        assertEquals(13, next.get(Calendar.HOUR_OF_DAY))
+        assertEquals(0, next.get(Calendar.MINUTE))
+    }
+
+    @Test
+    fun `window trigger rejects malformed windows`() {
+        val now = calendarAt(2026, Calendar.APRIL, 21, 10, 0)
+        assertNull(
+            AlarmTriggerScheduler.calculateNextTriggerTime(
+                windowTrigger("w6", listOf("11:30-09:30")),
+                now
+            )
+        )
+        assertNull(
+            AlarmTriggerScheduler.calculateNextTriggerTime(
+                windowTrigger("w7", listOf("not-a-window")),
+                now
+            )
+        )
+    }
+
+    @Test
+    fun `window trigger rejects non positive interval`() {
+        val now = calendarAt(2026, Calendar.APRIL, 21, 10, 0)
+        assertNull(
+            AlarmTriggerScheduler.calculateNextTriggerTime(
+                windowTrigger("w8", listOf("09:30-11:30"), intervalMinutes = 0L),
+                now
+            )
+        )
+    }
 }

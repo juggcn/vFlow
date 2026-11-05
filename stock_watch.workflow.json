@@ -1,0 +1,25 @@
+{
+  "id": "a7f3c1e2-5b64-4d8a-9c31-000000000001",
+  "name": "股票条件提醒",
+  "description": "按间隔抓取行情，命中自定义条件时推送通知",
+  "isEnabled": true,
+  "version": "1.1.0",
+  "triggers": [
+    {
+      "moduleId": "vflow.trigger.interval",
+      "parameters": {
+        "interval": 5,
+        "unit": "minute"
+      }
+    }
+  ],
+  "steps": [
+    {
+      "moduleId": "vflow.system.js",
+      "parameters": {
+        "script": "// ============ 股票条件提醒 ============\n// 条件写在 WATCH 里，每只股票可以不一样；没写的走默认值。\n\nvar DEFAULT_UP = 3.0;      // 默认：涨幅 >= 3% 提醒\nvar DEFAULT_DOWN = -3.0;   // 默认：跌幅 <= -3% 提醒\n\n// \"any\" = 任一条件命中就提醒；\"all\" = 配置的条件全部满足才提醒\nvar MODE = \"any\";\n\n// 只在 A 股交易时段执行（周一~周五 09:30-11:30 / 13:00-15:00）\nvar ONLY_TRADING_HOURS = true;\n\n// 条件字段：\n//   up   涨幅 >= 该值(%)      down 跌幅 <= 该值(%)\n//   high 价格 >= 该值          low  价格 <= 该值\n//   vr   量比 >= 该值\n// 不写 up/down 就用 DEFAULT_UP / DEFAULT_DOWN；写 null 表示这条不判断\nvar WATCH = [\n    { code: \"sh600000\" },                                                  // 浦发银行：默认 ±3%\n    { code: \"sz000001\", up: 5.0, down: -5.0 },                             // 平安银行：放宽到 ±5%\n    { code: \"sh000001\", up: 1.5, down: -1.5 },                             // 上证指数：阈值收紧\n    { code: \"sz300750\", up: null, down: null, high: 260, low: 240, vr: 2.0 } // 宁德时代：只看价格/量比\n];\n\nfunction fmtPct(v) { return (v >= 0 ? \"+\" : \"\") + v.toFixed(2) + \"%\"; }\n\nvar now = new Date();\nvar wd = now.getDay();\nvar hm = now.getHours() * 100 + now.getMinutes();\nvar inSession = (wd >= 1 && wd <= 5) &&\n    ((hm >= 930 && hm <= 1130) || (hm >= 1300 && hm <= 1500));\n\nvar out = { ran: false, inSession: inSession, alerts: 0, alertText: \"\", summary: \"\", error: \"\" };\n\nif (!ONLY_TRADING_HOURS || inSession) {\n    try {\n        var codes = [];\n        var conf = {};\n        for (var i = 0; i < WATCH.length; i++) {\n            codes.push(WATCH[i].code);\n            conf[WATCH[i].code.substring(2)] = WATCH[i];   // 用 6 位代码匹配\n        }\n\n        var resp = vflow.network.http_request({\n            url: \"https://qt.gtimg.cn/q=\" + codes.join(\",\"),\n            method: \"GET\",\n            timeout: 8\n        });\n\n        var rows = String(resp.response_body).split(\";\");\n        var lines = [];\n        var alerts = [];\n\n        for (var i = 0; i < rows.length; i++) {\n            var row = rows[i];\n            if (!row || row.indexOf('=\"') < 0) continue;\n\n            var f = row.substring(row.indexOf('=\"') + 2).split(\"~\");\n            if (f.length < 35) continue;\n\n            var name  = f[1];\n            var price = parseFloat(f[3]);    // 现价\n            var chg   = parseFloat(f[32]);   // 涨跌幅 %\n            var vr    = parseFloat(f[49]);   // 量比\n            if (!price || isNaN(chg)) continue;   // 停牌/无数据\n\n            var c = conf[f[2]] || {};\n            // 未写该字段 = 用默认阈值；显式写 null = 这条不判断\n            var up   = c.up   === undefined ? DEFAULT_UP   : c.up;\n            var down = c.down === undefined ? DEFAULT_DOWN : c.down;\n\n            // 逐条判断，命中的记进 hits\n            var hits = [];\n            if (up   != null && chg >= up)         hits.push(\"涨幅≥\" + up + \"%\");\n            if (down != null && chg <= down)       hits.push(\"跌幅≤\" + down + \"%\");\n            if (c.high != null && price >= c.high) hits.push(\"价格≥\" + c.high);\n            if (c.low  != null && price <= c.low)  hits.push(\"价格≤\" + c.low);\n            if (c.vr   != null && vr >= c.vr)      hits.push(\"量比≥\" + c.vr);\n\n            var total = (up != null ? 1 : 0) + (down != null ? 1 : 0) +\n                        (c.high != null ? 1 : 0) + (c.low != null ? 1 : 0) +\n                        (c.vr != null ? 1 : 0);\n            var hit = MODE === \"all\" ? (hits.length > 0 && hits.length === total) : hits.length > 0;\n\n            var rowText = name + \" \" + price + \" \" + fmtPct(chg);\n            lines.push((hit ? \"● \" : \"  \") + rowText + (hit ? \"  [\" + hits.join(\" & \") + \"]\" : \"\"));\n            if (hit) alerts.push(rowText + \"  (\" + hits.join(\" & \") + \")\");\n        }\n\n        out.ran = true;\n        out.alerts = alerts.length;\n        out.summary = lines.join(\"\\n\");\n        out.alertText = alerts.join(\"\\n\");\n\n        if (alerts.length > 0) {\n            vflow.notification.send_notification({\n                title: \"股价提醒 \" + alerts.length + \" 只\",\n                message: alerts.join(\"\\n\")\n            });\n        }\n    } catch (e) {\n        out.error = String(e);\n    }\n}\n\nout;\n",
+        "inputs": {}
+      }
+    }
+  ]
+}

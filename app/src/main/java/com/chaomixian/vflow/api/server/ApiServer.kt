@@ -3,6 +3,7 @@ package com.chaomixian.vflow.api.server
 import com.chaomixian.vflow.api.auth.AuthManager
 import com.chaomixian.vflow.api.auth.RateLimiter
 import com.chaomixian.vflow.api.handler.*
+import com.chaomixian.vflow.api.mcp.McpServerHandler
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
 import fi.iki.elonen.NanoHTTPD
@@ -34,6 +35,16 @@ class ApiServer(
     private lateinit var folderHandler: FolderHandler
     private lateinit var importExportHandler: ImportExportHandler
     private lateinit var systemHandler: SystemHandler
+
+    /** MCP 服务端（Streamable HTTP），首次访问时初始化 */
+    private val mcpHandler: McpServerHandler by lazy {
+        McpServerHandler(
+            authManager = authManager,
+            workflowManager = dependencies.workflowManager,
+            gson = gson,
+            serverVersion = resolveAppVersion()
+        )
+    }
 
     var isServerRunning = false
         private set
@@ -112,6 +123,9 @@ class ApiServer(
 
             // 添加CORS头
             val response = when {
+                // MCP 服务端点（自带 Token 鉴权，不走 /api/v1 前缀）
+                uri.trimEnd('/') == McpServerHandler.ENDPOINT -> mcpHandler.handle(session)
+
                 // 认证端点（不需要Token）
                 uri.startsWith("/api/v1/auth") -> handleAuthRequest(session)
 
@@ -242,9 +256,23 @@ class ApiServer(
     private fun addCorsHeaders(response: Response): Response {
         response.addHeader("Access-Control-Allow-Origin", "*")
         response.addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        response.addHeader("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        response.addHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Mcp-Session-Id, MCP-Protocol-Version")
+        response.addHeader("Access-Control-Expose-Headers", "Mcp-Session-Id")
         response.addHeader("Access-Control-Max-Age", "86400")
         return response
+    }
+
+    /**
+     * 读取应用版本号，用于 MCP 的 serverInfo
+     */
+    private fun resolveAppVersion(): String {
+        return try {
+            dependencies.context.packageManager
+                .getPackageInfo(dependencies.context.packageName, 0)
+                .versionName ?: "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
     }
 }
 

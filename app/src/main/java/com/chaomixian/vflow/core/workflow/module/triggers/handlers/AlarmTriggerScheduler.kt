@@ -43,8 +43,10 @@ object AlarmTriggerScheduler {
                 nextTriggerTime.timeInMillis,
                 intent
             )
-        } else when (trigger.type) {
-            TimeTriggerModule().id -> {
+        } else when {
+            // 指定时刻是用户可见的「闹钟」，用 setAlarmClock 保证准点；
+            // 时段重复一天会响十几次，挂常驻闹钟图标是骚扰，改走 setExactAndAllowWhileIdle。
+            trigger.type == TimeTriggerModule().id && !TimeTriggerModule.isWindowMode(trigger.parameters) -> {
                 val alarmClockInfo = AlarmManager.AlarmClockInfo(nextTriggerTime.timeInMillis, intent)
                 alarmManager.setAlarmClock(alarmClockInfo, intent)
             }
@@ -96,6 +98,10 @@ object AlarmTriggerScheduler {
         trigger: TriggerSpec,
         now: Calendar = Calendar.getInstance()
     ): Calendar? {
+        if (TimeTriggerModule.isWindowMode(trigger.parameters)) {
+            return calculateWindowTriggerTime(trigger, now)
+        }
+
         val time = trigger.parameters["time"] as? String ?: return null
         val days = (trigger.parameters["days"] as? List<*>)?.mapNotNull { (it as? Number)?.toInt() } ?: emptyList()
         val parts = time.split(":").mapNotNull { it.toIntOrNull() }
@@ -134,6 +140,70 @@ object AlarmTriggerScheduler {
             if (candidateTime.after(now)) {
                 return candidateTime
             }
+        }
+        return null
+    }
+
+    /**
+     * 时段重复模式：在 [windows] 内按 [interval_minutes] 触发。
+     *
+     * 触发点固定对齐到「时段起点 + k×间隔」，**不**从上次触发时刻累加。
+     * 这样即使闹钟被 Doze 延迟、App 重启或重新调度，落点依然在同一组格点上，
+     * 不会像「间隔触发」那样越走越偏，也不会在时段外继续触发。
+     *
+     * 被延迟而错过的格点直接跳过，不补触发。
+     */
+    internal fun calculateWindowTriggerTime(
+        trigger: TriggerSpec,
+        now: Calendar = Calendar.getInstance()
+    ): Calendar? {
+        val windows = TimeTriggerModule.parseWindows(trigger.parameters["windows"])
+        if (windows.isEmpty()) return null
+
+        val stepMinutes = (trigger.parameters["interval_minutes"] as? Number)?.toInt()
+            ?.takeIf { it > 0 } ?: return null
+        val stepSeconds = stepMinutes * 60
+
+        val days = (trigger.parameters["days"] as? List<*>)
+            ?.mapNotNull { (it as? Number)?.toInt() }
+            ?: emptyList()
+
+        val nowSeconds = now.get(Calendar.HOUR_OF_DAY) * 3600 +
+            now.get(Calendar.MINUTE) * 60 + now.get(Calendar.SECOND)
+
+        for (offset in 0..7) {
+            val day = Calendar.getInstance().apply {
+                timeInMillis = now.timeInMillis
+                add(Calendar.DAY_OF_YEAR, offset)
+            }
+            if (days.isNotEmpty() && day.get(Calendar.DAY_OF_WEEK) !in days) continue
+
+            var earliest: Calendar? = null
+            for ((startMinute, endMinute) in windows) {
+                val baseSeconds = startMinute * 60
+                // 今天：取严格晚于当前时刻的第一个格点（+1 避免重排时原地自激）；
+                // 之后几天：从时段起点算起。
+                val slot = if (offset == 0) {
+                    maxOf(0, Math.floorDiv(nowSeconds - baseSeconds, stepSeconds) + 1)
+                } else {
+                    0
+                }
+                val slotSeconds = baseSeconds + slot * stepSeconds
+                if (slotSeconds > endMinute * 60) continue
+
+                val candidate = Calendar.getInstance().apply {
+                    timeInMillis = day.timeInMillis
+                    set(Calendar.HOUR_OF_DAY, slotSeconds / 3600)
+                    set(Calendar.MINUTE, slotSeconds / 60 % 60)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                if (earliest == null || candidate.before(earliest)) {
+                    earliest = candidate
+                }
+            }
+            // 当天只要命中任一窗口就可以直接返回；未命中则顺延到下一天。
+            if (earliest != null) return earliest
         }
         return null
     }

@@ -37,6 +37,7 @@ fun ApiSettingsScreen(
     val serverConfig by apiService.serverConfig.collectAsState()
 
     var serverUrl by remember { mutableStateOf<String?>(null) }
+    var mcpEndpoint by remember { mutableStateOf<String?>(null) }
     var showTokenDialog by remember { mutableStateOf(false) }
     var showConfigDialog by remember { mutableStateOf(false) }
 
@@ -46,8 +47,10 @@ fun ApiSettingsScreen(
     LaunchedEffect(serverState) {
         if (serverState == ApiService.ServerState.RUNNING) {
             serverUrl = apiService.getServerUrl()
+            mcpEndpoint = apiService.getMcpEndpoint()
         } else {
             serverUrl = null
+            mcpEndpoint = null
         }
     }
 
@@ -129,6 +132,16 @@ fun ApiSettingsScreen(
                                 text = stringResource(R.string.api_settings_server_url, url ?: ""),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        if (mcpEndpoint != null) {
+                            val endpoint = mcpEndpoint
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = stringResource(R.string.api_settings_mcp_endpoint, endpoint ?: ""),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }

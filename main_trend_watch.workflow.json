@@ -1,0 +1,31 @@
+{
+  "id": "b8d4e2f3-6c75-4e9b-8d42-000000000002",
+  "name": "主趋势线监控（日线）",
+  "description": "通达信主趋势线 EMA(EMA(C,10),10)，向上买向下卖，三源兜底",
+  "isEnabled": true,
+  "version": "1.0.0",
+  "triggers": [
+    {
+      "moduleId": "vflow.trigger.time",
+      "parameters": {
+        "time": "15:05",
+        "days": [
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "moduleId": "vflow.system.js",
+      "parameters": {
+        "script": "// ================= 主趋势线监控 =================\n// 通达信原式:  主趋势线: EMA(EMA(CLOSE,10),10)\n//              红(买) = 今日主趋势线 > 昨日 ;  绿(卖) = 其余\n// 只需要收盘价序列，其余 HG 变量（MACD 背离、筹码、共振、打板/低吸）都不参与主趋势线。\n\nvar CODE   = \"sh600000\";   // 标的，必须带前缀：sh / sz / bj\nvar PERIOD = \"day\";        // \"day\" 日线监控 / \"week\" 周线监控\nvar BARS   = 150;          // 参与计算的 K 线根数，越多 EMA 越接近通达信\nvar ONLY_NEW_SIGNAL = true;   // true = 只在方向翻转时通知；false = 每次都报当前状态\n\n// 数据源顺序：腾讯 → 东方财富 → 新浪，前一个失败自动换下一个\n// 注意：新浪盘中不返回当日 K 线，会慢一根，只作兜底\n\nfunction normCode(c) {\n    c = String(c).toLowerCase().replace(/\\s/g, \"\");\n    if (c.indexOf(\"sh\") === 0 || c.indexOf(\"sz\") === 0 || c.indexOf(\"bj\") === 0) return c;\n    if (c.length !== 6) return c;\n    var h = c.charAt(0);\n    if (h === \"6\" || h === \"5\" || h === \"9\") return \"sh\" + c;\n    if (h === \"4\" || h === \"8\") return \"bj\" + c;\n    return \"sz\" + c;   // 0/1/2/3 开头；指数请显式写前缀\n}\n\n// 通达信 EMA: 首值取第一根收盘价，之后 alpha = 2/(N+1)\nfunction ema(vals, n) {\n    var a = 2.0 / (n + 1);\n    var out = [vals[0]];\n    for (var i = 1; i < vals.length; i++) out.push(out[i - 1] + a * (vals[i] - out[i - 1]));\n    return out;\n}\n\nfunction kTencent(code, period, n) {\n    var p = period === \"week\" ? \"week\" : \"day\";\n    var url = \"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=\"\n            + code + \",\" + p + \",,,\" + n + \",qfq\";\n    var r = vflow.network.http_request({ url: url, method: \"GET\", timeout: 10 });\n    var o = JSON.parse(String(r.response_body));\n    var node = o.data[code];\n    var arr = node[\"qfq\" + p] || node[p];\n    if (!arr || !arr.length) throw \"腾讯无数据\";\n    var out = [];\n    for (var i = 0; i < arr.length; i++) out.push(parseFloat(arr[i][2]));   // [日期,开,收,高,低,量]\n    return out;\n}\n\nfunction kEastmoney(code, period, n) {\n    var secid = (code.indexOf(\"sh\") === 0 ? \"1.\" : \"0.\") + code.substring(2);\n    var klt = period === \"week\" ? 102 : 101;\n    var url = \"https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=\" + secid\n            + \"&ut=fa5fd1943c7b386f172d6893dbfba10b&klt=\" + klt + \"&fqt=1&end=20500101\"\n            + \"&lmt=\" + n + \"&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58\";\n    var r = vflow.network.http_request({\n        url: url, method: \"GET\", timeout: 10,\n        headers: { \"User-Agent\": \"Mozilla/5.0\", \"Referer\": \"https://quote.eastmoney.com/\" }\n    });\n    var o = JSON.parse(String(r.response_body));\n    if (!o.data || !o.data.klines) throw \"东财无数据\";\n    var kl = o.data.klines;\n    var out = [];\n    for (var i = 0; i < kl.length; i++) out.push(parseFloat(kl[i].split(\",\")[2]));  // 日期,开,收,高,低\n    return out;\n}\n\nfunction kSina(code, period, n) {\n    var scale = period === \"week\" ? 1200 : 240;\n    var url = \"https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData\"\n            + \"?symbol=\" + code + \"&scale=\" + scale + \"&ma=no&datalen=\" + n;\n    var r = vflow.network.http_request({ url: url, method: \"GET\", timeout: 10 });\n    var arr = JSON.parse(String(r.response_body));\n    if (!arr || !arr.length) throw \"新浪无数据\";\n    var out = [];\n    for (var i = 0; i < arr.length; i++) out.push(parseFloat(arr[i].close));\n    return out;\n}\n\n// ---------------- 主流程 ----------------\nvar out = {\n    code: CODE, period: PERIOD, source: \"\", bars: 0,\n    signal: \"\", trend: 0, prev: 0, close: 0, isNew: false, error: \"\"\n};\n\nvar code = normCode(CODE);\nvar providers = [\n    { name: \"腾讯\", fn: kTencent },\n    { name: \"东方财富\", fn: kEastmoney },\n    { name: \"新浪\", fn: kSina }\n];\n\nvar closes = null;\nfor (var i = 0; i < providers.length; i++) {\n    try {\n        var k = providers[i].fn(code, PERIOD, BARS);\n        if (k && k.length >= 40) { closes = k; out.source = providers[i].name; break; }\n        out.error += providers[i].name + \":数据不足(\" + (k ? k.length : 0) + \"); \";\n    } catch (e) {\n        out.error += providers[i].name + \":\" + String(e) + \"; \";\n    }\n}\n\nif (closes) {\n    var e1 = ema(closes, 10);\n    var e2 = ema(e1, 10);\n    var n = e2.length;\n    var cur = e2[n - 1], prev = e2[n - 2], prev2 = e2[n - 3];\n    var up = cur > prev;\n    var prevUp = prev > prev2;\n\n    out.bars = closes.length;\n    out.close = closes[closes.length - 1];\n    out.trend = cur;\n    out.prev = prev;\n    out.signal = up ? \"红/买\" : \"绿/卖\";\n    out.isNew = (up !== prevUp);\n\n    var label = PERIOD === \"week\" ? \"周线\" : \"日线\";\n    var shouldNotify = ONLY_NEW_SIGNAL ? out.isNew : true;\n\n    if (shouldNotify) {\n        vflow.notification.send_notification({\n            title: code + \" \" + label + \" 主趋势线\" + (up ? \"向上 · 买\" : \"向下 · 卖\"),\n            message: \"主趋势线 \" + cur.toFixed(3) + \"（前值 \" + prev.toFixed(3) + \"）\\n\"\n                   + \"收盘 \" + out.close + \"\\n\"\n                   + (out.isNew ? \"★ 本根翻转\" : \"信号延续\") + \"\\n\"\n                   + \"数据源 \" + out.source + \" / \" + out.bars + \" 根\"\n        });\n    }\n} else {\n    out.signal = \"取数失败\";\n}\n\nout;\n",
+        "inputs": {}
+      }
+    }
+  ]
+}

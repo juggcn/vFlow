@@ -207,7 +207,8 @@ internal class ChatCompletionClient(
             val payload = when (mode) {
                 ChatEndpointMode.CHAT_COMPLETIONS -> buildChatCompletionPayload(request)
                 ChatEndpointMode.RESPONSES -> buildResponsesPayload(request)
-                ChatEndpointMode.ANTHROPIC_MESSAGES -> error("Unsupported OpenAI adapter mode")
+                ChatEndpointMode.ANTHROPIC_MESSAGES,
+                ChatEndpointMode.MODELS -> error("Unsupported OpenAI adapter mode")
             }
             val root = executeJsonRequest(
                 url = url,
@@ -217,7 +218,8 @@ internal class ChatCompletionClient(
             return when (mode) {
                 ChatEndpointMode.CHAT_COMPLETIONS -> parseChatCompletion(root)
                 ChatEndpointMode.RESPONSES -> parseResponsesCompletion(root)
-                ChatEndpointMode.ANTHROPIC_MESSAGES -> error("Unsupported OpenAI adapter mode")
+                ChatEndpointMode.ANTHROPIC_MESSAGES,
+                ChatEndpointMode.MODELS -> error("Unsupported OpenAI adapter mode")
             }
         }
 

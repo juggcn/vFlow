@@ -34,3 +34,10 @@ debug-signing.properties
 # Python local cache
 __pycache__/
 *.py[cod]
+
+# 本地发布站点（内含 APK 大文件）与发布标记
+/apk-site/
+/.wbapp_*.genie
+
+# 含 API Key / 账户口令的工作流导出，勿入库
+auto_trade_param.workflow.json

@@ -180,6 +180,19 @@ class ApiService private constructor(
     }
 
     /**
+     * 获取MCP端点地址（Streamable HTTP）
+     */
+    fun getMcpEndpoint(): String? {
+        if (_serverState.value != ServerState.RUNNING) {
+            return null
+        }
+
+        val config = _serverConfig.value
+        val ipAddress = getLocalIpAddress()
+        return "http://$ipAddress:${config.port}${com.chaomixian.vflow.api.mcp.McpServerHandler.ENDPOINT}"
+    }
+
+    /**
      * 生成Token
      */
     fun generateToken(deviceId: String, deviceName: String?): String? {

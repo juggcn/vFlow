@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,10 +17,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,6 +36,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -40,6 +44,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuGroup
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.DropdownMenuPopup
@@ -86,6 +91,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.chaomixian.vflow.R
+import com.chaomixian.vflow.ui.chat.ChatModelCatalog
 import com.chaomixian.vflow.ui.chat.ChatPresetConfig
 import com.chaomixian.vflow.ui.chat.ChatPresetRepository
 import com.chaomixian.vflow.ui.chat.ChatProvider
@@ -369,6 +375,9 @@ private fun ProviderDetailScreen(
         ModelEditorDialog(
             initialDisplayName = editingPreset?.name.orEmpty(),
             initialModelName = editingPreset?.model ?: providerConfig.providerEnum.defaultModel,
+            provider = providerConfig.providerEnum,
+            apiKey = apiKey,
+            baseUrl = baseUrl,
             onDismiss = { editingPresetId = null },
             onConfirm = { displayName, modelName ->
                 onSavePreset(editingPreset, displayName, modelName)
@@ -1024,11 +1033,20 @@ private fun AddProviderDialog(
 private fun ModelEditorDialog(
     initialDisplayName: String,
     initialModelName: String,
+    provider: ChatProvider,
+    apiKey: String,
+    baseUrl: String,
     onDismiss: () -> Unit,
     onConfirm: (String, String) -> Unit,
 ) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     var displayName by remember(initialDisplayName) { mutableStateOf(initialDisplayName) }
     var modelName by remember(initialModelName) { mutableStateOf(initialModelName) }
+    var fetching by remember { mutableStateOf(false) }
+    var fetchedModels by remember { mutableStateOf<List<String>>(emptyList()) }
+    var fetchError by remember { mutableStateOf<String?>(null) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1049,7 +1067,109 @@ private fun ModelEditorDialog(
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text(stringResource(R.string.module_config_chat_model_name)) },
                     singleLine = true,
+                    trailingIcon = {
+                        if (fetching) {
+                            CircularProgressIndicator(
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .size(18.dp),
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        fetching = true
+                                        fetchError = null
+                                        ChatModelCatalog.fetch(provider, apiKey, baseUrl)
+                                            .onSuccess { models ->
+                                                fetchedModels = models
+                                                if (models.isEmpty()) {
+                                                    fetchError = context.getString(
+                                                        R.string.model_config_fetch_models_empty
+                                                    )
+                                                }
+                                            }
+                                            .onFailure { error ->
+                                                fetchError = context.getString(
+                                                    R.string.model_config_fetch_models_failed,
+                                                    error.message ?: error.javaClass.simpleName
+                                                )
+                                            }
+                                        fetching = false
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = stringResource(R.string.model_config_fetch_models),
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                    },
                 )
+
+                fetchError?.let { message ->
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                if (fetchedModels.isNotEmpty()) {
+                    Text(
+                        text = stringResource(
+                            R.string.model_config_fetch_models_count,
+                            fetchedModels.size
+                        ),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    ) {
+                        LazyColumn(modifier = Modifier.heightIn(max = 200.dp)) {
+                            items(fetchedModels, key = { it }) { id ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            modelName = id
+                                            if (displayName.isBlank()) displayName = id
+                                            fetchedModels = emptyList()
+                                            fetchError = null
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = id,
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (id == modelName) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        },
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (id == modelName) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.primary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {

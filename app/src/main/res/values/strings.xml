@@ -151,6 +151,10 @@
     <string name="model_config_saved">已保存</string>
     <string name="model_config_add_model">添加模型</string>
     <string name="model_config_edit_model">编辑模型</string>
+    <string name="model_config_fetch_models">获取模型列表</string>
+    <string name="model_config_fetch_models_empty">服务端没有返回任何模型</string>
+    <string name="model_config_fetch_models_failed">获取失败：%s</string>
+    <string name="model_config_fetch_models_count">共 %d 个可用模型，点选填入</string>
     <string name="model_config_delete_model">删除模型</string>
     <string name="model_config_delete_model_confirm">删除后不会影响其它供应商。</string>
     <string name="model_config_delete_provider">删除供应商</string>
@@ -966,6 +970,15 @@
     <string name="label_trigger_interval">触发间隔</string>
     <string name="button_select_time">选择时间</string>
     <string name="label_repeat">重复</string>
+    <string name="label_trigger_mode">触发方式</string>
+    <string name="label_trigger_windows">时段</string>
+    <string name="label_trigger_window_interval">间隔</string>
+    <string name="button_add_trigger_window">＋ 添加时段</string>
+    <string name="action_remove_trigger_window">删除时段</string>
+    <string name="hint_trigger_window_doze">间隔小于 15 分钟时，息屏后可能延迟</string>
+    <string name="text_trigger_window_separator">~</string>
+    <string name="text_time_09_30">09:30</string>
+    <string name="text_time_11_30">11:30</string>
     <string name="label_template_image">模板图片</string>
     <string name="button_select_from_gallery">从相册选择</string>
     <string name="button_screenshot_select">截图选取</string>
@@ -1439,6 +1452,7 @@
     <string name="api_settings_status_stopped">已停止</string>
     <string name="api_settings_status_error">错误</string>
     <string name="api_settings_server_url">服务器地址: %s</string>
+    <string name="api_settings_mcp_endpoint">MCP 端点: %s</string>
     <string name="api_settings_server_config">服务器配置</string>
     <string name="api_settings_port">端口: %d</string>
     <string name="api_settings_access_tokens">访问令牌</string>

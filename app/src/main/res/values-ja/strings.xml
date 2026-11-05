@@ -149,6 +149,10 @@
     <string name="model_config_saved">保存されました</string>
     <string name="model_config_add_model">モデルの追加</string>
     <string name="model_config_edit_model">モデルの編集</string>
+    <string name="model_config_fetch_models">モデル一覧を取得</string>
+    <string name="model_config_fetch_models_empty">サーバーがモデルを返しませんでした</string>
+    <string name="model_config_fetch_models_failed">取得に失敗しました：%s</string>
+    <string name="model_config_fetch_models_count">利用可能なモデル %d 件、タップして入力</string>
     <string name="model_config_delete_model">モデルの削除</string>
     <string name="model_config_delete_model_confirm">削除しても他のサプライヤーには影響しません。</string>
     <string name="model_config_delete_provider">サプライヤーの削除</string>
@@ -910,6 +914,15 @@
     <string name="label_trigger_interval">トリガ間隔</string>
     <string name="button_select_time">時刻を選択</string>
     <string name="label_repeat">リピート</string>
+    <string name="label_trigger_mode">起動方法</string>
+    <string name="label_trigger_windows">時間帯</string>
+    <string name="label_trigger_window_interval">間隔</string>
+    <string name="button_add_trigger_window">＋ 時間帯を追加</string>
+    <string name="action_remove_trigger_window">時間帯を削除</string>
+    <string name="hint_trigger_window_doze">15 分未満の場合、画面オフ中は遅れることがあります</string>
+    <string name="text_trigger_window_separator">~</string>
+    <string name="text_time_09_30">09:30</string>
+    <string name="text_time_11_30">11:30</string>
     <string name="label_template_image">テンプレート画像</string>
     <string name="button_select_from_gallery">アルバムから選ぶ</string>
     <string name="button_screenshot_select">スクリーンショットの選択</string>
@@ -1359,6 +1372,7 @@
     <string name="api_settings_status_stopped">停止しました</string>
     <string name="api_settings_status_error">エラー</string>
     <string name="api_settings_server_url">サーバーアドレス: %s</string>
+    <string name="api_settings_mcp_endpoint">MCP エンドポイント: %s</string>
     <string name="api_settings_server_config">サーバー構成</string>
     <string name="api_settings_port">ポート: %d</string>
     <string name="api_settings_access_tokens">アクセストークン</string>

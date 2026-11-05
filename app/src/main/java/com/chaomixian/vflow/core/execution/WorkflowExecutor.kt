@@ -51,6 +51,10 @@ object WorkflowExecutor {
     private val executorScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     // 使用 ConcurrentHashMap 来安全地跟踪正在运行的工作流及其对应的 Job
     private val runningWorkflows = ConcurrentHashMap<String, MutableList<ActiveExecution>>()
+
+    // 执行结果快照：供 MCP / API 等外部调用方查询返回值与命名变量
+    private val executionSnapshots = ConcurrentHashMap<String, WorkflowExecutionSnapshot>()
+    private const val MAX_EXECUTION_SNAPSHOTS = 200
     // 用于标记工作流是否被 Stop 信号正常终止
     private val stoppedWorkflows = ConcurrentHashMap<String, Boolean>()
     // 用于标记某次执行是否已通过失败分支完成收尾，避免 finally 再次广播结束态
@@ -124,6 +128,93 @@ object WorkflowExecutor {
     }
 
     /**
+     * 查询一次执行的结果快照。
+     * @param executionInstanceId [execute] 返回的执行实例 ID。
+     */
+    fun getExecutionSnapshot(executionInstanceId: String): WorkflowExecutionSnapshot? {
+        return executionSnapshots[executionInstanceId]
+    }
+
+    /**
+     * 列出最近的执行快照，按开始时间倒序。
+     */
+    fun listExecutionSnapshots(limit: Int = 20): List<WorkflowExecutionSnapshot> {
+        return executionSnapshots.values.sortedByDescending { it.startedAt }.take(limit)
+    }
+
+    /**
+     * 写入快照并做容量裁剪（只保留最近 [MAX_EXECUTION_SNAPSHOTS] 条）。
+     */
+    private fun putExecutionSnapshot(snapshot: WorkflowExecutionSnapshot) {
+        executionSnapshots[snapshot.executionInstanceId] = snapshot
+        if (executionSnapshots.size > MAX_EXECUTION_SNAPSHOTS) {
+            val overflow = executionSnapshots.size - MAX_EXECUTION_SNAPSHOTS
+            executionSnapshots.entries
+                .sortedBy { it.value.startedAt }
+                .take(overflow)
+                .forEach { executionSnapshots.remove(it.key) }
+        }
+    }
+
+    /**
+     * 记录执行终态快照。
+     */
+    private fun recordExecutionSnapshot(
+        executionInstanceId: String,
+        workflow: Workflow,
+        startedAt: Long,
+        returnValue: Any?,
+        context: ExecutionContext?,
+        status: WorkflowExecutionStatus,
+        error: String?
+    ) {
+        putExecutionSnapshot(
+            WorkflowExecutionSnapshot(
+                executionInstanceId = executionInstanceId,
+                workflowId = workflow.id,
+                workflowName = workflow.name,
+                status = status,
+                startedAt = startedAt,
+                finishedAt = System.currentTimeMillis(),
+                returnValue = stringifyValue(returnValue),
+                namedVariables = context?.let { snapshotNamedVariables(it) } ?: emptyMap(),
+                error = error
+            )
+        )
+    }
+
+    private fun stringifyValue(value: Any?): String? {
+        return when (value) {
+            null -> null
+            is VObject -> value.asString().ifEmpty { null }
+            else -> value.toString()
+        }
+    }
+
+    /**
+     * 命名变量快照。
+     * 「创建变量」存进去的可能是未解析的模板字面量（如 `{{step.out}}`），这里展开一次。
+     */
+    private fun snapshotNamedVariables(context: ExecutionContext): Map<String, String> {
+        if (context.namedVariables.isEmpty()) return emptyMap()
+        val result = LinkedHashMap<String, String>()
+        context.namedVariables.forEach { (name, value) ->
+            val raw = value.asString()
+            val resolved = if (raw.contains("{{")) {
+                try {
+                    VariableResolver.resolve(raw, context)
+                } catch (e: Exception) {
+                    raw
+                }
+            } else {
+                raw
+            }
+            result[name] = resolved
+        }
+        return result
+    }
+
+    /**
      * 执行一个工作流。这是最外层的入口点。
      * @param workflow 要执行的工作流。
      * @param context Android 上下文。
@@ -172,6 +263,17 @@ object WorkflowExecutor {
         }
 
         val executionInstanceId = "${workflow.id}_${UUID.randomUUID()}"
+        val startedAt = System.currentTimeMillis()
+        // 先落一份 RUNNING 快照，保证调用方拿到 executionInstanceId 后立刻能查到状态
+        putExecutionSnapshot(
+            WorkflowExecutionSnapshot(
+                executionInstanceId = executionInstanceId,
+                workflowId = workflow.id,
+                workflowName = workflow.name,
+                status = WorkflowExecutionStatus.RUNNING,
+                startedAt = startedAt
+            )
+        )
         val job = executorScope.launch {
             // 将 workflow.id 注入到当前协程及其子协程的上下文中
             // 这样，在此作用域内调用的所有本地 DebugLogger 方法都能通过 ThreadLocal 获取到 ID
@@ -194,6 +296,10 @@ object WorkflowExecutor {
                 if (!workDir.exists()) workDir.mkdirs()
 
                 var isTimeout = false
+                // 「停止并返回」的值，执行结束后写入快照
+                var returnValue: Any? = null
+                // try 块内声明的变量在 finally 中不可见，这里留一个引用
+                var executionContextRef: ExecutionContext? = null
 
                 try {
                     // 创建并注册执行期间所需的服务
@@ -216,13 +322,14 @@ object WorkflowExecutor {
                         workflowStack = Stack<String>().apply { push(workflow.id) },
                         workDir = workDir
                     )
+                    executionContextRef = initialContext
 
                     // 超时限制
                     val maxExecutionTime = workflow.maxExecutionTime
 
                     if (maxExecutionTime != null && maxExecutionTime > 0) {
                         try {
-                            withTimeout(maxExecutionTime * 1000L) {
+                            returnValue = withTimeout(maxExecutionTime * 1000L) {
                                 seedTriggerOutputs(workflow, initialContext, triggerStepId)
                                 executeWorkflowInternal(workflow, initialContext, executionInstanceId)
                             }
@@ -246,7 +353,7 @@ object WorkflowExecutor {
                         }
                     } else {
                         seedTriggerOutputs(workflow, initialContext, triggerStepId)
-                        executeWorkflowInternal(workflow, initialContext, executionInstanceId)
+                        returnValue = executeWorkflowInternal(workflow, initialContext, executionInstanceId)
                     }
 
                     if (!isTimeout) {
@@ -288,6 +395,25 @@ object WorkflowExecutor {
                         val fullLog = executionLogs[workflow.id]?.toString() ?: ""
                         val hasActiveExecutions = unregisterExecution(workflow.id, executionInstanceId)
                         stoppedWorkflows.remove(executionInstanceId)
+
+                        // 写入终态快照（返回值 + 命名变量），供 MCP / API 查询
+                        recordExecutionSnapshot(
+                            executionInstanceId = executionInstanceId,
+                            workflow = workflow,
+                            startedAt = startedAt,
+                            returnValue = returnValue,
+                            context = executionContextRef,
+                            status = if (isTimeout || wasCancelled) {
+                                WorkflowExecutionStatus.CANCELLED
+                            } else {
+                                WorkflowExecutionStatus.COMPLETED
+                            },
+                            error = when {
+                                isTimeout -> "执行超时"
+                                wasCancelled -> "执行已取消"
+                                else -> null
+                            }
+                        )
 
                         if (!hasActiveExecutions) {
                             executionLogs.remove(workflow.id)

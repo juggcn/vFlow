@@ -553,13 +553,22 @@
     <string name="summary_vflow_notification_send_notification_prefix">通知を送信:</string>
     <string name="msg_vflow_notification_send_notification_sent">通知を送信しました: %s</string>
     <string name="module_vflow_trigger_time_name">時刻トリガー</string>
-    <string name="module_vflow_trigger_time_desc">指定した時刻と日付でワークフローを起動します。アラームに似た動作です</string>
+    <string name="module_vflow_trigger_time_desc">指定した時刻、または時間帯の中で繰り返しワークフローを起動します</string>
+    <string name="param_vflow_trigger_time_mode_name">起動方法</string>
+    <string name="option_vflow_trigger_time_mode_point">時刻指定</string>
+    <string name="option_vflow_trigger_time_mode_window">時間帯で繰り返し</string>
     <string name="param_vflow_trigger_time_time_name">起動時刻</string>
+    <string name="param_vflow_trigger_time_windows_name">起動時間帯</string>
+    <string name="param_vflow_trigger_time_interval_name">時間帯の間隔</string>
     <string name="param_vflow_trigger_time_days_name">繰り返し日</string>
     <string name="summary_vflow_trigger_time_everyday">毎日</string>
-    <string name="summary_vflow_trigger_time_once">1回のみ</string>
     <string name="summary_vflow_trigger_time_workdays">平日</string>
     <string name="summary_vflow_trigger_time_suffix"> に起動</string>
+    <string name="summary_vflow_trigger_time_every_minutes">%1$s 分ごと</string>
+    <string name="summary_vflow_trigger_time_window_more"> ほか %1$s 件の時間帯</string>
+    <string name="error_vflow_trigger_time_invalid">起動時刻の形式が正しくありません</string>
+    <string name="error_vflow_trigger_time_window_invalid">有効な時間帯を 1 つ以上設定し、開始時刻を終了時刻より前にしてください</string>
+    <string name="error_vflow_trigger_time_interval_invalid">時間帯の間隔は 0 分より大きくしてください</string>
     <string name="msg_vflow_trigger_time_triggered">時刻タスクが起動しました</string>
     <string name="module_vflow_trigger_interval_name">間隔トリガー</string>
     <string name="module_vflow_trigger_interval_desc">指定した時間間隔でワークフローを繰り返し起動します</string>
@@ -2975,4 +2984,6 @@
     <string name="option_vflow_integration_main_trend_source_tencent">Tencent</string>
     <string name="option_vflow_integration_main_trend_source_eastmoney">Eastmoney</string>
     <string name="option_vflow_integration_main_trend_source_sina">Sina</string>
+    <string name="option_vflow_network_mcp_client_action_call">ツールを呼び出す</string>
+    <string name="option_vflow_network_mcp_client_action_list">ツール一覧</string>
 </resources>

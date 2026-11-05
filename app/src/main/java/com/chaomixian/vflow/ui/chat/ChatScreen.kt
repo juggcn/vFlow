@@ -54,7 +54,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -380,17 +380,22 @@ fun ChatScreen(
                 top = 10.dp,
                 bottom = messageListBottomPadding,
             ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             if (activeConversation != null && activeConversation.messages.isNotEmpty()) {
-                items(
-                    items = activeConversation.messages,
-                    key = { it.id },
-                ) { message ->
+                val messages = activeConversation.messages
+                itemsIndexed(
+                    items = messages,
+                    key = { _, message -> message.id },
+                ) { index, message ->
+                    // 同一角色的连续消息贴紧，换角色时留出段落间距
+                    val roleSwitched = index > 0 && messages[index - 1].role != message.role
                     ChatMessageBubble(
                         message = message,
                         availableToolsByName = availableToolsByName,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = if (roleSwitched) 10.dp else 0.dp),
                         onApproveToolCalls = chatViewModel::approveToolCalls,
                         onRejectToolCalls = chatViewModel::rejectToolCalls,
                         onRerunToolCalls = chatViewModel::rerunToolCalls,
@@ -1053,7 +1058,7 @@ private fun UserMessageBubble(
                 text = stringResource(R.string.chat_role_you),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                modifier = Modifier.padding(horizontal = 6.dp),
             )
             Surface(
                 shape = RoundedCornerShape(
@@ -1066,8 +1071,8 @@ private fun UserMessageBubble(
                 tonalElevation = 0.dp,
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Text(
                         text = message.content,
@@ -1177,12 +1182,12 @@ private fun AssistantMessageCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Surface(
@@ -1193,20 +1198,20 @@ private fun AssistantMessageCard(
                         Icon(
                             imageVector = Icons.Rounded.AutoAwesome,
                             contentDescription = null,
-                            modifier = Modifier.padding(8.dp).size(16.dp),
+                            modifier = Modifier.padding(6.dp).size(14.dp),
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
                     Text(
                         text = stringResource(R.string.chat_role_assistant),
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.weight(1f),
                     )
                     if (!message.isPending && message.content.isNotBlank()) {
                         FilledTonalIconButton(
                             onClick = onCopyMessage,
-                            modifier = Modifier.size(34.dp),
+                            modifier = Modifier.size(30.dp),
                             colors = IconButtonDefaults.filledTonalIconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1215,7 +1220,7 @@ private fun AssistantMessageCard(
                             Icon(
                                 imageVector = Icons.Rounded.ContentCopy,
                                 contentDescription = stringResource(R.string.common_copy),
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(14.dp),
                             )
                         }
                     }

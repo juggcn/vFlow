@@ -15,6 +15,8 @@ import com.chaomixian.vflow.core.module.InputDefinition
 import com.chaomixian.vflow.core.module.OutputDefinition
 import com.chaomixian.vflow.core.module.ParameterType
 import com.chaomixian.vflow.core.module.ProgressUpdate
+import com.chaomixian.vflow.core.module.isMagicVariable
+import com.chaomixian.vflow.core.module.isNamedVariable
 import com.chaomixian.vflow.core.types.VObject
 import com.chaomixian.vflow.core.types.VTypeRegistry
 import com.chaomixian.vflow.core.types.basic.VBoolean
@@ -23,6 +25,7 @@ import com.chaomixian.vflow.core.types.basic.VList
 import com.chaomixian.vflow.core.types.basic.VNumber
 import com.chaomixian.vflow.core.types.basic.VString
 import com.chaomixian.vflow.core.workflow.model.ActionStep
+import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -180,13 +183,22 @@ class MainTrendModule : BaseModule() {
     )
 
     override fun getSummary(context: Context, step: ActionStep): CharSequence {
-        val codes = parseCodes(step.parameters["codes"] as? String ?: "")
+        val rawCodes = (step.parameters["codes"] as? String ?: "").trim()
+        val codes = parseCodes(rawCodes)
         val rawPeriod = step.parameters["period"] as? String ?: PERIOD_DAY
         val period = periodOptions.firstOrNull { it == rawPeriod } ?: PERIOD_DAY
         val periodLabel = when (period) {
             PERIOD_DAY -> "日线"
             PERIOD_WEEK -> "周线"
             else -> "${period}分钟"
+        }
+        // 标的填的是变量引用时，编辑期拿不到运行期的实际代码，
+        // parseCodes 解析结果必然为空，这里改成输出变量胶囊（渲染后形如「#1 标的代码」），
+        // 避免误报「未配置标的」。
+        if (codes.isEmpty() && (rawCodes.isMagicVariable() || rawCodes.isNamedVariable())) {
+            val codesInput = getInputs().firstOrNull { it.id == "codes" }
+            val pill = PillUtil.createPillFromParam(rawCodes, codesInput)
+            return PillUtil.buildSpannable(context, "主趋势线 · ", pill, " · $periodLabel")
         }
         val codeLabel = when {
             codes.isEmpty() -> "未配置标的"
