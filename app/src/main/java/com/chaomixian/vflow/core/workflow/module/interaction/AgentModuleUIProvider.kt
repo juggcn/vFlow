@@ -19,7 +19,9 @@ import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.ModuleUIProvider
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.ui.workflow_editor.RichTextView
+import com.google.android.material.button.MaterialButtonToggleGroup
 import com.google.android.material.chip.ChipGroup
+import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.TextInputEditText
 
@@ -38,6 +40,11 @@ class AgentModuleUIProvider : ModuleUIProvider {
         val stepsSlider: Slider = view.findViewById(R.id.slider_max_steps)
         val stepsText: TextView = view.findViewById(R.id.tv_max_steps_value)
 
+        val displayModeGroup: MaterialButtonToggleGroup = view.findViewById(R.id.tbg_display_mode)
+        val displayModeHint: TextView = view.findViewById(R.id.tv_display_mode_hint)
+        val keepScreenOnSwitch: MaterialSwitch = view.findViewById(R.id.switch_keep_screen_on)
+        val keepScreenOnHint: TextView = view.findViewById(R.id.tv_keep_screen_on_hint)
+
         /** 当前选中的模型预设 id，空表示自定义 */
         var presetId: String = AgentPresetChips.PRESET_CUSTOM
 
@@ -49,7 +56,8 @@ class AgentModuleUIProvider : ModuleUIProvider {
     }
 
     override fun getHandledInputIds(): Set<String> = setOf(
-        "preset_id", "preset_name", "base_url", "model", "api_key", "instruction", "max_steps"
+        "preset_id", "preset_name", "base_url", "model", "api_key", "instruction", "max_steps",
+        "display_mode", "keep_screen_on"
     )
 
     override fun createEditor(
@@ -126,6 +134,26 @@ class AgentModuleUIProvider : ModuleUIProvider {
             onParametersChanged()
         }
 
+        // 执行环境：bind 内部先恢复选中态再挂监听，否则卡片一打开就会回写参数
+        val initialMode = currentParameters["display_mode"] as? String
+        AgentDisplayModeUi.bind(
+            group = holder.displayModeGroup,
+            hint = holder.displayModeHint,
+            initialMode = initialMode
+        ) { mode ->
+            AgentDisplayModeUi.renderKeepScreenOnHint(holder.keepScreenOnHint, mode)
+            onParametersChanged()
+        }
+        AgentDisplayModeUi.renderKeepScreenOnHint(holder.keepScreenOnHint, initialMode ?: AgentDisplayModeUi.MAIN)
+
+        // 屏幕常亮：老工作流没有这个参数时按开处理，与执行侧兜底一致
+        holder.keepScreenOnSwitch.isChecked = when (val raw = currentParameters["keep_screen_on"]) {
+            is Boolean -> raw
+            is String -> raw.trim().equals("true", ignoreCase = true)
+            else -> true
+        }
+        holder.keepScreenOnSwitch.setOnCheckedChangeListener { _, _ -> onParametersChanged() }
+
         return holder
     }
 
@@ -164,7 +192,9 @@ class AgentModuleUIProvider : ModuleUIProvider {
             "model" to h.modelEdit.text.toString(),
             "api_key" to h.apiKeyEdit.text.toString(),
             "instruction" to (h.instructionRichText?.getRawText() ?: ""),
-            "max_steps" to h.stepsSlider.value.toDouble()
+            "max_steps" to h.stepsSlider.value.toDouble(),
+            "display_mode" to AgentDisplayModeUi.selectedMode(h.displayModeGroup),
+            "keep_screen_on" to h.keepScreenOnSwitch.isChecked
         )
     }
 }

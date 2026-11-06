@@ -44,8 +44,6 @@ import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -72,6 +70,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.chaomixian.vflow.R
@@ -341,7 +340,7 @@ fun SettingsScreen(
             end = 16.dp,
             bottom = 8.dp + extraBottomContentPadding
         ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
             SearchBarCard(
@@ -726,7 +725,7 @@ private fun UpdateCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             NativeIconBadge(
@@ -744,7 +743,7 @@ private fun UpdateCard(
                 )
                 Text(
                     text = stringResource(R.string.settings_update_download),
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -762,7 +761,7 @@ private fun SettingsSection(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             text = title,
             style = MaterialTheme.typography.labelMedium,
@@ -851,7 +850,7 @@ private fun DefaultErrorPolicyRow(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 18.dp, vertical = 16.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             Row(
@@ -871,7 +870,7 @@ private fun DefaultErrorPolicyRow(
                     )
                     Text(
                         text = subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -1016,7 +1015,8 @@ private fun NativeSliderRow(
         Slider(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 76.dp, end = 20.dp, bottom = 12.dp),
+                // 与上面 14dp 内边距 + 28dp 徽标 + 12dp 间隔对齐，滑块起点跟标题对齐
+                .padding(start = 54.dp, end = 14.dp, bottom = 8.dp),
             value = sliderValue,
             onValueChange = { sliderValue = it },
             valueRange = 75f..125f,
@@ -1042,23 +1042,33 @@ private fun NativeListRow(
 ) {
     var showInfoDialog by remember(infoText) { mutableStateOf(false) }
 
-    ListItem(
-        modifier = modifier.then(
-            if (onClick != null) {
-                Modifier.clickable(enabled = enabled, onClick = onClick)
-            } else {
-                Modifier
-            }
-        ),
-        colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        headlineContent = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
+    // 不用 M3 的 ListItem：它把行高钉死在 56/72dp，而设置项几乎都是「标题 + 一行副标题」，
+    // 72dp 打底一屏放不下几项。这里自己排，行高约 58dp（无副标题约 42dp）。
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(enabled = enabled, onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        NativeIconBadge(icon = icon, tone = tone)
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = title,
+                    // 与工作流列表的文件名同字号；限一行，长标题不再顶掉右侧箭头
                     style = MaterialTheme.typography.bodyLarge,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
                     color = if (enabled) {
                         MaterialTheme.colorScheme.onSurface
                     } else {
@@ -1079,19 +1089,18 @@ private fun NativeListRow(
                     }
                 }
             }
-        },
-        supportingContent = {
             Text(
                 text = subtitle,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        },
-        leadingContent = {
-            NativeIconBadge(icon = icon, tone = tone)
-        },
-        trailingContent = trailing
-    )
+        }
+
+        if (trailing != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            trailing()
+        }
+    }
 
     if (showInfoDialog && infoText != null) {
         AlertDialog(
@@ -1121,7 +1130,7 @@ private fun SettingsButtonRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             FilledTonalButton(
@@ -1155,14 +1164,15 @@ private fun NativeIconBadge(
 ) {
     Box(
         modifier = Modifier
-            .size(36.dp)
+            .size(28.dp)
             .background(tone.containerColor, CircleShape),
         contentAlignment = Alignment.Center
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            tint = tone.contentColor
+            tint = tone.contentColor,
+            modifier = Modifier.size(18.dp)
         )
     }
 }
@@ -1186,7 +1196,7 @@ private fun ShellModeCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .padding(horizontal = 14.dp, vertical = 12.dp)
         ) {
             Text(
                 text = title,
@@ -1196,7 +1206,7 @@ private fun ShellModeCard(
             Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = subtitle,
-                style = MaterialTheme.typography.bodyMedium,
+                style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(modifier = Modifier.height(12.dp))

@@ -564,13 +564,18 @@ object AgentUtils {
 
     /**
      * 获取当前界面信息。
-     * 1. 优先使用 Shell (dumpsys window) 获取精确的 Activity 名。
-     * 2. 如果失败，回退到 AccessibilityService 获取包名。
+     * 1. 虚拟屏（displayId > 0）：按 displayId 从无障碍窗口列表里取，不能看全局焦点。
+     * 2. 主屏：优先 Shell (dumpsys window) 拿精确的 Activity 名。
+     * 3. 都失败时回退到 AccessibilityService 的包名。
      */
     @RequiresApi(Build.VERSION_CODES.R)
     suspend fun getCurrentUIInfo(context: Context, displayId: Int = 0): String {
-        // 尝试 Shell (Shizuku / Root) 获取 Activity
-        if (ShellManager.isShizukuActive(context) || ShellManager.isRootAvailable()) {
+        // 虚拟屏必须按 displayId 取窗口。原来的实现直接看全局 mCurrentFocus，
+        // 那玩意儿跟随的是主屏，会把主屏的 App 名报给模型 —— 模型据此判断
+        // "我现在在哪个页面"会全错，然后对着虚拟屏乱点。
+        if (displayId > 0) {
+            getDisplayUiInfo(displayId)?.let { return it }
+        } else if (ShellManager.isShizukuActive(context) || ShellManager.isRootAvailable()) {
             try {
                 // 如果是虚拟屏幕，dumpsys 可能需要更复杂的 grep，或者假设焦点正确
                 // 暂时使用全局 mCurrentFocus，它通常跟随用户或者最新活动的 display
@@ -611,6 +616,30 @@ object AgentUtils {
         }
 
         return "Unknown UI"
+    }
+
+    /**
+     * 取指定屏幕上的界面信息。
+     *
+     * 优先 TYPE_APPLICATION 窗口；一个都没有时退化到该屏任意有包名的窗口
+     * （系统弹窗、输入法这类）；连包名都取不到时返回带 displayId 的说明，
+     * 至少让模型知道「这是虚拟屏，不是主屏」。
+     */
+    private fun getDisplayUiInfo(displayId: Int): String? {
+        val service = ServiceStateBus.getAccessibilityService() ?: return null
+        val windows = runCatching { service.windows }.getOrNull()
+            ?.filter { it.displayId == displayId }
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+
+        val appPkg = windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            ?.root?.packageName?.toString()
+            ?.takeIf { it.isNotBlank() }
+        val pkg = appPkg ?: windows.firstNotNullOfOrNull {
+            it.root?.packageName?.toString()?.takeIf { name -> name.isNotBlank() }
+        }
+
+        return if (!pkg.isNullOrBlank()) pkg else "unknown (display $displayId)"
     }
 
     /**

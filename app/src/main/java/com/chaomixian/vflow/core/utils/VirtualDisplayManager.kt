@@ -5,12 +5,15 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.hardware.display.DisplayManager
 import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.DisplayMetrics
 import android.view.Display
 import com.chaomixian.vflow.core.logging.DebugLogger
+import com.chaomixian.vflow.core.logging.LogManager
 import com.chaomixian.vflow.services.ShellManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
@@ -32,6 +35,14 @@ object VirtualDisplayManager {
 
     private var currentSession: VirtualDisplaySession? = null
 
+    /**
+     * 会话引用计数。
+     *
+     * 两个 agent 模块（AI 智能体 / AutoGLM）可能先后或同时启动虚拟屏，原来后启动的那个
+     * 会直接销毁前一个的会话，等于互相把对方的屏幕踢掉。现在按引用计数共享同一块屏。
+     */
+    private var refCount = 0
+
     /** 探测期间抓到的最新一帧，供紧接其后的截图直接复用，避免帧被消费两次导致无帧可用 */
     private var lastFrame: Bitmap? = null
     private val mutex = Mutex()
@@ -40,14 +51,23 @@ object VirtualDisplayManager {
 
     /**
      * 启动一个无头虚拟屏幕会话。
+     *
+     * 尺寸默认跟随真机主屏：写死 1080x2400 时目标 App 会按一个真机上不存在的尺寸布局，
+     * 元素被截断或触发另一套响应式排版，模型看到的是假界面。
+     *
      * @return 成功返回 displayId，失败返回 -1。
      */
-    suspend fun startHeadlessSession(width: Int = 1080, height: Int = 2400, densityDpi: Int = 400): Int {
+    suspend fun startHeadlessSession(width: Int = 0, height: Int = 0, densityDpi: Int = 0): Int {
         mutex.withLock {
-            // 如果已有会话，先清理
-            releaseLocked()
+            // 已有会话就复用并计数，不销毁上一个 agent 的屏幕
+            currentSession?.let { session ->
+                refCount++
+                DebugLogger.i(TAG, "复用虚拟屏幕 ID ${session.displayId}（引用计数 $refCount）")
+                return session.displayId
+            }
 
-            DebugLogger.i(TAG, "正在创建 ImageReader Surface ($width x $height)...")
+            val (w, h, dpi) = resolveSessionMetrics(width, height, densityDpi)
+            DebugLogger.i(TAG, "正在创建 ImageReader Surface ($w x $h @ ${dpi}dpi)...")
 
             // 1. 初始化后台线程 (用于 ImageReader 回调)
             if (handlerThread == null) {
@@ -57,14 +77,15 @@ object VirtualDisplayManager {
 
             // 2. 创建 ImageReader
             // 使用 RGBA_8888，maxImages=2 即可
-            val imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            val imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
 
             // 3. 通过 Shizuku 请求 Shell 创建 VirtualDisplay
-            val displayId = ShellManager.createVirtualDisplay(imageReader.surface, width, height, densityDpi)
+            val displayId = ShellManager.createVirtualDisplay(imageReader.surface, w, h, dpi)
 
             if (displayId > 0) {
                 DebugLogger.i(TAG, "虚拟屏幕创建成功: ID $displayId")
-                currentSession = VirtualDisplaySession(displayId, width, height, imageReader)
+                currentSession = VirtualDisplaySession(displayId, w, h, imageReader)
+                refCount = 1
                 waitForFirstFrameLocked()
                 return displayId
             } else {
@@ -73,6 +94,34 @@ object VirtualDisplayManager {
                 return -1
             }
         }
+    }
+
+    /**
+     * 解析会话尺寸与密度。
+     *
+     * 全部为 0 表示「跟随主屏」；显式传了非 0 值就以传入的为准（留出调试口）。
+     * 取不到主屏信息时退回 1080x2400@400，至少能起一块屏。
+     */
+    @Suppress("DEPRECATION")
+    private fun resolveSessionMetrics(width: Int, height: Int, densityDpi: Int): Triple<Int, Int, Int> {
+        if (width > 0 && height > 0 && densityDpi > 0) return Triple(width, height, densityDpi)
+
+        val fallback = Triple(1080, 2400, 400)
+        val context = runCatching { LogManager.applicationContext }.getOrNull() ?: return fallback
+        val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            ?: return fallback
+
+        val metrics = DisplayMetrics()
+        val display = runCatching { displayManager.getDisplay(Display.DEFAULT_DISPLAY) }.getOrNull()
+            ?: return fallback
+        display.getRealMetrics(metrics)
+
+        if (metrics.widthPixels <= 0 || metrics.heightPixels <= 0) return fallback
+        return Triple(
+            metrics.widthPixels,
+            metrics.heightPixels,
+            if (metrics.densityDpi > 0) metrics.densityDpi else fallback.third
+        )
     }
 
     private suspend fun waitForFirstFrameLocked(timeoutMs: Long = 1500L) {
@@ -89,10 +138,16 @@ object VirtualDisplayManager {
     }
 
     /**
-     * 释放当前会话。
+     * 释放当前会话。引用计数大于 1 时只减计数，真正归零才销毁屏幕。
      */
     suspend fun release() {
         mutex.withLock {
+            if (refCount > 1) {
+                refCount--
+                DebugLogger.i(TAG, "释放虚拟屏幕引用（剩余 $refCount）")
+                return@withLock
+            }
+            refCount = 0
             releaseLocked()
         }
     }
@@ -110,6 +165,7 @@ object VirtualDisplayManager {
             }
         }
         currentSession = null
+        refCount = 0
 
         lastFrame?.let { if (!it.isRecycled) it.recycle() }
         lastFrame = null

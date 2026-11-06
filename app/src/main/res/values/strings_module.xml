@@ -1565,6 +1565,12 @@
     <string name="option_vflow_ai_agent_provider_zhipu">智谱</string>
     <string name="option_vflow_ai_agent_display_mode_main">主屏幕</string>
     <string name="option_vflow_ai_agent_display_mode_virtual">虚拟屏幕 (后台)</string>
+    <string name="agent_display_mode_hint_main">在主屏幕上直接操作前台应用，执行期间会占用屏幕。</string>
+    <string name="agent_display_mode_hint_virtual">在独立的虚拟屏幕（后台）上运行，不打断你正在做的事。需要 Shizuku。</string>
+    <string name="agent_display_mode_hint_virtual_unavailable">未检测到 Shizuku，虚拟屏幕无法启动。请先激活 Shizuku，否则执行到这一步会直接失败。</string>
+    <string name="param_vflow_ai_agent_keep_screen_on_name">屏幕常亮</string>
+    <string name="hint_vflow_ai_agent_keep_screen_on">执行期间不熄屏。息屏后无障碍服务拿不到窗口、截图全黑，智能体会卡住。会明显增加耗电。</string>
+    <string name="hint_vflow_ai_agent_keep_screen_on_virtual">虚拟屏幕在后台运行，主屏熄灭不影响执行。打开只在你想盯着悬浮窗进度时有用。</string>
 
     <!-- vflow.interaction.find_image -->
     <string name="module_vflow_interaction_find_image_name">查找图片</string>

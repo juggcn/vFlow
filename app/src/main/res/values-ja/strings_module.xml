@@ -1394,6 +1394,12 @@
     <string name="option_vflow_ai_agent_provider_zhipu">智谱</string>
     <string name="option_vflow_ai_agent_display_mode_main">メイン画面</string>
     <string name="option_vflow_ai_agent_display_mode_virtual">仮想画面（バックグラウンド）</string>
+    <string name="agent_display_mode_hint_main">メイン画面の前面アプリを直接操作します。実行中は画面を占有します。</string>
+    <string name="agent_display_mode_hint_virtual">独立した仮想画面（バックグラウンド）で実行し、現在の操作を中断しません。Shizuku が必要です。</string>
+    <string name="agent_display_mode_hint_virtual_unavailable">Shizuku が検出されないため、仮想画面を起動できません。先に Shizuku を有効化してください。有効化しない場合、この手順は即座に失敗します。</string>
+    <string name="param_vflow_ai_agent_keep_screen_on_name">画面を常時オン</string>
+    <string name="hint_vflow_ai_agent_keep_screen_on">実行中は画面を消灯しません。消灯するとアクセシビリティサービスがウィンドウを取得できず、スクリーンショットも真っ黒になり、エージェントが停止します。消費電力は明確に増えます。</string>
+    <string name="hint_vflow_ai_agent_keep_screen_on_virtual">仮想画面はバックグラウンドで動作するため、メイン画面が消灯しても実行に影響しません。オーバーレイの進捗を確認したい場合のみオンにしてください。</string>
     <string name="module_vflow_interaction_find_image_name">画像を検索</string>
     <string name="module_vflow_interaction_find_image_desc">画面上でテンプレート画像に似た領域を探し、一致位置の中心座標を返します</string>
     <string name="param_vflow_interaction_find_image_template_uri_name">テンプレート画像</string>

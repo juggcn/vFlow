@@ -45,8 +45,8 @@ import kotlin.math.abs
 
 class AutoGLMModule : BaseModule() {
     companion object {
-        private const val DISPLAY_MODE_MAIN = "main_screen"
-        private const val DISPLAY_MODE_VIRTUAL = "virtual_screen"
+        private const val DISPLAY_MODE_MAIN = AgentDisplayModeUi.MAIN
+        private const val DISPLAY_MODE_VIRTUAL = AgentDisplayModeUi.VIRTUAL
     }
 
     override val id = "vflow.ai.autoglm"
@@ -66,12 +66,22 @@ class AutoGLMModule : BaseModule() {
     override val uiProvider: ModuleUIProvider = AutoGLMModuleUIProvider()
 
     override fun getRequiredPermissions(step: ActionStep?): List<Permission> {
-        return listOf(
+        val base = listOf(
             PermissionManager.ACCESSIBILITY,
             PermissionManager.STORAGE,
             PermissionManager.USAGE_STATS,
             PermissionManager.OVERLAY
-        ) + ShellManager.getRequiredPermissions(LogManager.applicationContext)
+        )
+        // 虚拟屏走 VirtualDisplayManager → ShellManager 的用户服务，只能用 Shizuku。
+        // 全局 shell 模式是 root / core 时 getRequiredPermissions 会显示「已满足」，
+        // 但执行到那一步必然失败，所以这里固定要 Shizuku。
+        val virtualScreen = AgentDisplayModeUi.normalize(step?.parameters?.get("display_mode") as? String) ==
+                AgentDisplayModeUi.VIRTUAL
+        return if (virtualScreen) {
+            base + PermissionManager.SHIZUKU
+        } else {
+            base + ShellManager.getRequiredPermissions(LogManager.applicationContext)
+        }
     }
 
     override fun getInputs(): List<InputDefinition> = listOf(
@@ -108,6 +118,14 @@ class AutoGLMModule : BaseModule() {
                 "Virtual Screen (Background)" to DISPLAY_MODE_VIRTUAL
             ),
             isHidden = false
+        ),
+        // 执行期间压住息屏：息屏后无障碍拿不到窗口、screencap 出黑图，agent 会对着黑屏点
+        InputDefinition(
+            "keep_screen_on",
+            "屏幕常亮",
+            ParameterType.BOOLEAN,
+            true,
+            nameStringRes = R.string.param_vflow_ai_agent_keep_screen_on_name
         )
     )
 
@@ -157,6 +175,8 @@ class AutoGLMModule : BaseModule() {
         val maxSteps = context.getVariableAsInt("max_steps") ?: 30
         val rawDisplayMode = context.getVariableAsString("display_mode", DISPLAY_MODE_MAIN)
         val displayMode = inputsById["display_mode"]?.normalizeEnumValue(rawDisplayMode) ?: rawDisplayMode
+        // 老工作流没有这个参数，按「常亮」处理，与编辑卡片默认值一致
+        val keepScreenOn = context.getVariableAsBoolean("keep_screen_on") ?: true
 
         if (apiKey.isBlank()) return ExecutionResult.Failure("配置错误", "API Key 不能为空")
 
@@ -180,7 +200,7 @@ class AutoGLMModule : BaseModule() {
         }
 
         val overlayManager = AgentOverlayManager(context.applicationContext)
-        withContext(Dispatchers.Main) { overlayManager.show() }
+        withContext(Dispatchers.Main) { overlayManager.show(keepScreenOn) }
 
         try {
             val agentTools = AgentTools(context)
@@ -557,6 +577,11 @@ class AutoGLMModule : BaseModule() {
 
             // 关闭悬浮窗
             withContext(NonCancellable) { withContext(Dispatchers.Main) { overlayManager.dismiss() } }
+
+            // 这三个是写进命名变量的，不清掉的话工作流后续步骤会读到上一轮的 displayId
+            context.setVariable("_target_display_id", VObjectFactory.from(0))
+            context.setVariable("_target_display_width", VObjectFactory.from(0))
+            context.setVariable("_target_display_height", VObjectFactory.from(0))
         }
     }
 

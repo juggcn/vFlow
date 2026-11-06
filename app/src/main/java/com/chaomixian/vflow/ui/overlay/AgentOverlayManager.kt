@@ -51,7 +51,13 @@ class AgentOverlayManager(private val context: Context) {
     // 标记任务是否被用户取消
     @Volatile var isCancelled = false
 
-    fun show() {
+    /**
+     * @param keepScreenOn 执行期间是否保持屏幕常亮。
+     *
+     * 用窗口 flag 而不是 PARTIAL_WAKE_LOCK：窗口 attach 就生效、移除窗口后系统自动失效，
+     * 不需要配对释放。WakeLock 那条路要在每个 finally 里兜，漏一处就永远不灭屏。
+     */
+    fun show(keepScreenOn: Boolean = true) {
         if (borderRoot != null) return
 
         // 创建带有应用主题的 ContextWrapper（根据用户设置选择动态取色或默认主题）
@@ -84,7 +90,9 @@ class AgentOverlayManager(private val context: Context) {
                     WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                    WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS,
+                    WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS or
+                    // 息屏后无障碍拿不到窗口、screencap 出黑图，agent 会对着黑屏点
+                    (if (keepScreenOn) WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON else 0),
             PixelFormat.TRANSLUCENT
         ).apply {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -289,16 +297,14 @@ class AgentOverlayManager(private val context: Context) {
     }
 
     fun dismiss() {
-        try {
-            borderAnimator?.cancel()
-            if (borderRoot != null) windowManager.removeView(borderRoot)
-            if (controlRoot != null) windowManager.removeView(controlRoot)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            borderRoot = null
-            controlRoot = null
-        }
+        borderAnimator?.cancel()
+        borderAnimator = null
+        // 两个窗口各自兜异常：原来 try 包住两次 removeView，前一个抛异常后一个就不会被移除，
+        // 而漏掉的那个可能还带着 FLAG_KEEP_SCREEN_ON，等于永远不灭屏。
+        runCatching { borderRoot?.let { windowManager.removeView(it) } }
+        runCatching { controlRoot?.let { windowManager.removeView(it) } }
+        borderRoot = null
+        controlRoot = null
     }
 
     private fun startBorderAnimation() {

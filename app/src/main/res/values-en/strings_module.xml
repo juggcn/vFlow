@@ -1546,6 +1546,12 @@
     <string name="option_vflow_ai_agent_provider_zhipu">Zhipu</string>
     <string name="option_vflow_ai_agent_display_mode_main">Main Screen</string>
     <string name="option_vflow_ai_agent_display_mode_virtual">Virtual Screen (Background)</string>
+    <string name="agent_display_mode_hint_main">Operates the foreground app directly on the main screen. The screen is occupied while running.</string>
+    <string name="agent_display_mode_hint_virtual">Runs on a separate virtual screen in the background without interrupting what you are doing. Requires Shizuku.</string>
+    <string name="agent_display_mode_hint_virtual_unavailable">Shizuku is not detected, so the virtual screen cannot start. Activate Shizuku first, otherwise this step fails immediately.</string>
+    <string name="param_vflow_ai_agent_keep_screen_on_name">Keep Screen On</string>
+    <string name="hint_vflow_ai_agent_keep_screen_on">Keeps the screen awake during execution. Once the screen sleeps, the accessibility service loses windows and screenshots come back black, stalling the agent. Noticeably increases battery usage.</string>
+    <string name="hint_vflow_ai_agent_keep_screen_on_virtual">The virtual screen runs in the background, so the main screen going dark does not affect execution. Enable this only if you want to watch the overlay progress.</string>
 
     <!-- vflow.interaction.find_image -->
     <string name="module_vflow_interaction_find_image_name">Find Image</string>
