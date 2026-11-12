@@ -27,7 +27,11 @@ object AccessibilityServiceStatus {
             context.contentResolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         )
-        return containsServiceId(enabledServicesSetting, getServiceId(context))
+        // 原服务和伪装服务都认。
+        // 原来只认「当前伪装开关对应的那个」，用户在切换开关前后启用过另一个时，
+        // 明明开着无障碍也会被判成未授权（对话页里表现为“需要权限：无障碍服务”）。
+        return containsServiceId(enabledServicesSetting, getOriginalServiceId(context)) ||
+            containsServiceId(enabledServicesSetting, getDisguisedServiceId(context))
     }
 
     fun isRunning(context: Context): Boolean {
@@ -39,9 +43,24 @@ object AccessibilityServiceStatus {
             return false
         }
 
+        val expected = ComponentName.unflattenFromString(expectedServiceId)
         return enabledServicesSetting
             .split(':')
-            .any { it.equals(expectedServiceId, ignoreCase = true) }
+            .any { entry ->
+                entry.equals(expectedServiceId, ignoreCase = true) ||
+                    (expected != null && matchesComponent(entry, expected))
+            }
+    }
+
+    /**
+     * 按「包名 + 类名」比较，兼容 Settings 里可能写入的简写形式。
+     * 有些 ROM 把组件名存成 `pkg/.services.AccessibilityService`，
+     * 直接和 `flattenToString()` 的完整类名比会判成不相等。
+     */
+    private fun matchesComponent(entry: String, expected: ComponentName): Boolean {
+        val actual = ComponentName.unflattenFromString(entry) ?: return false
+        if (!actual.packageName.equals(expected.packageName, ignoreCase = true)) return false
+        return actual.className.equals(expected.className, ignoreCase = true)
     }
 
     internal fun replaceServiceId(

@@ -329,7 +329,11 @@ object PermissionManager {
     /** 无障碍服务策略 */
     private val accessibilityStrategy = object : PermissionStrategy {
         override fun isGranted(context: Context, permission: Permission): Boolean {
-            return AccessibilityServiceStatus.isEnabledInSettings(context)
+            // 服务已经在跑就说明确实可用，不再依赖 Settings 里的组件名匹配：
+            // 部分 ROM 会改写入格式（简写类名），或用户切换过伪装开关，
+            // 只按组件名判断会把「明明开着」的服务判成未授权。
+            return AccessibilityServiceStatus.isRunning(context) ||
+                AccessibilityServiceStatus.isEnabledInSettings(context)
         }
         override fun createRequestIntent(context: Context, permission: Permission) =
             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)

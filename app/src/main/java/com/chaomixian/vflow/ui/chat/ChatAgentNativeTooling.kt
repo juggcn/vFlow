@@ -14,6 +14,7 @@ import com.chaomixian.vflow.core.workflow.module.system.InstalledAppSearchMatch
 import com.chaomixian.vflow.core.workflow.module.system.InstalledAppSearchSupport
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
+import com.chaomixian.vflow.services.ExecutionUIService
 import com.chaomixian.vflow.services.ServiceStateBus
 import com.chaomixian.vflow.services.ShellManager
 import java.io.File
@@ -2186,6 +2187,10 @@ internal class ChatAgentNativeToolExecutor(
         val workDir = File(appContext.cacheDir, "chat-agent-native").apply { mkdirs() }
         val services = ExecutionServices().apply {
             ServiceStateBus.getAccessibilityService()?.let(::add)
+            // 截屏模块在没有 Shell（没装 Shizuku / 没 root）时会回落到 MediaProjection，
+            // 那条路要求上下文里注册了 ExecutionUIService，缺了它就直接抛
+            // IllegalStateException("UI Service not available")，「观察界面(带截图)」必然失败。
+            add(ExecutionUIService(appContext))
         }
         return ExecutionContext(
             applicationContext = appContext,
