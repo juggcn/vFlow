@@ -202,6 +202,24 @@ class AgentModule : BaseModule() {
         return if (name.isEmpty()) "" else " · $name"
     }
 
+    /**
+     * 宽松解析布尔参数。
+     * 模型经常把 success 写成字符串 "false" / "0"，原来的 `as? Boolean ?: true` 会把它当成功。
+     */
+    private fun coerceBooleanArg(value: Any?, default: Boolean): Boolean {
+        return when (value) {
+            null -> default
+            is Boolean -> value
+            is Number -> value.toDouble() != 0.0
+            is String -> when (value.trim().lowercase(Locale.ROOT)) {
+                "true", "1", "yes", "y", "success", "succeeded", "ok" -> true
+                "false", "0", "no", "n", "failure", "failed", "error" -> false
+                else -> default
+            }
+            else -> default
+        }
+    }
+
     // 定义工具 Schema
     private fun getNativeToolsSchema(): JSONArray {
         val schema = JSONArray()
@@ -404,6 +422,9 @@ class AgentModule : BaseModule() {
                 put("content", systemPrompt)
             })
 
+            // 工具 schema 每轮都一样，循环外建一次即可；原来每步都重新解析 13 段 JSON 字面量。
+            val nativeToolsSchema = getNativeToolsSchema()
+
             var currentStep = 0
             var taskResult: ExecutionResult? = null
             var lastAction: LastAction? = null
@@ -593,7 +614,7 @@ class AgentModule : BaseModule() {
                 val requestBody = JSONObject().apply {
                     put("model", model)
                     put("messages", messages)
-                    put("tools", getNativeToolsSchema())
+                    put("tools", nativeToolsSchema)
                     put("tool_choice", if (toolChoiceRequired) "required" else "auto")
                 }
 
@@ -648,9 +669,13 @@ class AgentModule : BaseModule() {
                     val toolCalls = message.getJSONArray("tool_calls")
 
                     if (toolCalls.length() > 0) {
+                        // 记录本次 tool_call 的 id：解析/执行中途抛异常时，回填的 tool 消息必须用同一个 id，
+                        // 否则服务端会因为「tool 消息对不上 assistant 的 tool_calls」直接 400。
+                        var currentCallId = ""
                         try {
                             // 使用 optJSONObject 和 optString 安全解析，防止崩溃
                             val toolCall = toolCalls.getJSONObject(0)
+                            currentCallId = toolCall.optString("id").ifBlank { "call_${System.currentTimeMillis()}" }
                             val function = toolCall.optJSONObject("function")
 
                             if (function == null) {
@@ -659,7 +684,7 @@ class AgentModule : BaseModule() {
 
                             val name = function.optString("name", "")
                             val argsStr = function.optString("arguments", "{}")
-                            val callId = toolCall.optString("id", "call_${System.currentTimeMillis()}")
+                            val callId = currentCallId
 
                             if (name.isEmpty()) {
                                 throw Exception("Tool name is missing or empty")
@@ -706,7 +731,7 @@ class AgentModule : BaseModule() {
 
                                 if (name == "finish_task") {
                                     val res = args["result"]?.toString() ?: "Done"
-                                    val suc = args["success"] as? Boolean ?: true
+                                    val suc = coerceBooleanArg(args["success"], default = true)
                                     taskResult = ExecutionResult.Success(mapOf("result" to VString(res), "success" to VBoolean(suc)))
                                 } else {
                                     // 只读类工具不算「改变了界面」，用于后续的画面差分判断
@@ -761,10 +786,11 @@ class AgentModule : BaseModule() {
 
                         } catch (e: Exception) {
                             DebugLogger.e("AgentModule", "Error parsing/executing tool call", e)
-                            // 反馈错误给 AI，不崩溃
+                            // 反馈错误给 AI，不崩溃。tool_call_id 必须用本次真实 id，
+                            // 用固定字符串（原来是 "error"）会让下一轮请求被服务端拒绝。
                             messages.put(JSONObject().apply {
                                 put("role", "tool")
-                                put("tool_call_id", "error")
+                                put("tool_call_id", currentCallId.ifBlank { "call_error" })
                                 put("content", "SYSTEM ERROR: Invalid tool call format or parameters. Error: ${e.message}. Please generate a valid JSON tool call.")
                             })
                         }

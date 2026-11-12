@@ -17,11 +17,13 @@ import com.chaomixian.vflow.core.utils.VirtualDisplayManager
 import com.chaomixian.vflow.core.workflow.model.ActionStep
 import com.chaomixian.vflow.permissions.Permission
 import com.chaomixian.vflow.permissions.PermissionManager
+import com.chaomixian.vflow.services.ServiceStateBus
 import com.chaomixian.vflow.services.ShellManager
 import com.chaomixian.vflow.ui.workflow_editor.PillUtil
 import com.chaomixian.vflow.ui.overlay.AgentOverlayManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -47,6 +49,17 @@ class AutoGLMModule : BaseModule() {
     companion object {
         private const val DISPLAY_MODE_MAIN = AgentDisplayModeUi.MAIN
         private const val DISPLAY_MODE_VIRTUAL = AgentDisplayModeUi.VIRTUAL
+
+        /** 动作后没拿到任何稳定信号时的固定延时。 */
+        private const val ACTION_SETTLE_MS = 700L
+        /** 界面静默多久算稳定。 */
+        private const val UI_QUIET_MS = 300L
+        /** 等界面稳定的上限，超时就直接截图，不无限等。 */
+        private const val UI_STABLE_TIMEOUT_MS = 2_000L
+        /** 会让界面发生变化的动作，执行后需要等一等再截图。 */
+        private val MUTATING_ACTIONS = setOf(
+            "Tap", "Type", "Type_Name", "Launch", "Swipe", "Double Tap", "Long Press", "Back", "Home"
+        )
     }
 
     override val id = "vflow.ai.autoglm"
@@ -160,6 +173,17 @@ class AutoGLMModule : BaseModule() {
         val name = (step.parameters["preset_name"] as? String).orEmpty().trim()
             .ifBlank { (step.parameters["model"] as? String).orEmpty().trim() }
         return if (name.isEmpty()) "" else " · $name"
+    }
+
+    /**
+     * 归一化坐标（协议里是 0-999）转实际像素。
+     * 上限取 size-1，避免 999 直接算出等于屏宽的越界坐标。
+     * 所有动作统一走这里，原来 Tap 用 /999、Swipe 用 /1000，两套基准。
+     */
+    private fun toPixel(normalized: Int, size: Int): Int {
+        val maxIndex = (size - 1).coerceAtLeast(0)
+        if (maxIndex == 0) return 0
+        return (normalized / 999.0 * maxIndex).toInt().coerceIn(0, maxIndex)
     }
 
     override suspend fun execute(
@@ -307,8 +331,40 @@ class AutoGLMModule : BaseModule() {
                 overlayManager.hideForScreenshot() // 隐藏悬浮窗
             }
 
+            // 动作后等界面稳定的信号源，判定规则与 Agent 模块一致：
+            // 主屏走无障碍事件，虚拟屏走 ImageReader 帧信号，两者都没有才退回固定延时。
+            val eventDrivenSensing = targetDisplayId == 0 && ServiceStateBus.getAccessibilityService() != null
+            val frameDrivenSensing = targetDisplayId > 0 &&
+                VirtualDisplayManager.getCurrentDisplayId() == targetDisplayId
+            // 上一步是「会改界面的动作」时，下一步截图前先等稳定。
+            // 原来点完立刻截屏，常拿到动作前的旧帧，模型据此判断"没变化"就重复点。
+            var shouldSettleAfterAction = false
+
             while (currentStep < maxSteps) {
                 try { overlayManager.awaitState() } catch (e: CancellationException) { return ExecutionResult.Failure("任务取消", "用户手动停止了任务。") }
+
+                if (shouldSettleAfterAction) {
+                    shouldSettleAfterAction = false
+                    when {
+                        eventDrivenSensing -> {
+                            val stable = AgentUtils.awaitUiStable(quietMs = UI_QUIET_MS, timeoutMs = UI_STABLE_TIMEOUT_MS)
+                            DebugLogger.d(
+                                "AutoGLM",
+                                "等待界面稳定(无障碍事件): changed=${stable.changed} waited=${stable.waitedMs}ms timeout=${stable.timedOut}"
+                            )
+                        }
+
+                        frameDrivenSensing -> {
+                            val stable = AgentUtils.awaitVirtualUiStable(quietMs = UI_QUIET_MS, timeoutMs = UI_STABLE_TIMEOUT_MS)
+                            DebugLogger.d(
+                                "AutoGLM",
+                                "等待界面稳定(虚拟屏帧): changed=${stable.changed} waited=${stable.waitedMs}ms timeout=${stable.timedOut}"
+                            )
+                        }
+
+                        else -> delay(ACTION_SETTLE_MS)
+                    }
+                }
 
                 overlayManager.updateStatus("分析屏幕...", "准备截屏")
                 onProgress(ProgressUpdate("步骤 ${currentStep + 1}/$maxSteps: 观察中..."))
@@ -327,6 +383,9 @@ class AutoGLMModule : BaseModule() {
                 if (targetDisplayId == 0) {
                     overlayManager.restoreAfterScreenshot()
                 }
+
+                // 截图已经取到，顺手清掉历史缓存文件（原来 AutoGLM 全程不清理，workDir 只增不减）
+                AgentUtils.cleanupScreenshots(context.workDir)
 
                 val contentParts = JSONArray()
                 contentParts.put(JSONObject().apply {
@@ -413,6 +472,9 @@ class AutoGLMModule : BaseModule() {
                     val command = parseCommand(answer)
                     val actionName = command["action"] ?: "unknown"
 
+                    // 会改界面的动作，下一轮截图前先等界面稳定
+                    if (actionName in MUTATING_ACTIONS) shouldSettleAfterAction = true
+
                     overlayManager.updateStatus(null, "执行: $actionName")
 
                     var actionFeedback = "Action '$actionName' executed."
@@ -424,19 +486,19 @@ class AutoGLMModule : BaseModule() {
                                 val normX = (rawPos[0] as? Number)?.toInt()
                                 val normY = (rawPos[1] as? Number)?.toInt()
                                 if (normX != null && normY != null) {
-                                    val realX = (normX / 999.0 * screenWidth).toInt()
-                                    val realY = (normY / 999.0 * screenHeight).toInt()
-                                    agentTools.clickPoint(realX, realY)
+                                    val realX = toPixel(normX, screenWidth)
+                                    val realY = toPixel(normY, screenHeight)
+                                    actionFeedback = agentTools.clickPoint(realX, realY)
                                 }
                             }
                         }
                         "Type", "Type_Name" -> { // 处理 Type 和 Type_Name
                             val text = command["text"] as? String ?: ""
-                            agentTools.inputText(text)
+                            actionFeedback = agentTools.inputText(text)
                         }
                         "Launch" -> {
                             val app = command["app"] as? String ?: ""
-                            agentTools.launchApp(app)
+                            actionFeedback = agentTools.launchApp(app)
                         }
                         "Swipe" -> {
                             val start = command["start"] as? List<*>
@@ -449,11 +511,11 @@ class AutoGLMModule : BaseModule() {
                                 val normEY = (end[1] as? Number)?.toInt()
 
                                 if (normSX != null && normSY != null && normEX != null && normEY != null) {
-                                    // 映射到真实屏幕坐标
-                                    val realSX = (normSX / 1000.0 * screenWidth).toInt()
-                                    val realSY = (normSY / 1000.0 * screenHeight).toInt()
-                                    val realEX = (normEX / 1000.0 * screenWidth).toInt()
-                                    val realEY = (normEY / 1000.0 * screenHeight).toInt()
+                                    // 与 Tap 等动作统一使用同一套 0-999 归一化映射
+                                    val realSX = toPixel(normSX, screenWidth)
+                                    val realSY = toPixel(normSY, screenHeight)
+                                    val realEX = toPixel(normEX, screenWidth)
+                                    val realEY = toPixel(normEY, screenHeight)
 
                                     // 调用精确滑动
                                     actionFeedback = agentTools.swipe(realSX, realSY, realEX, realEY)
@@ -468,9 +530,9 @@ class AutoGLMModule : BaseModule() {
                                 val normX = (rawPos[0] as? Number)?.toInt()
                                 val normY = (rawPos[1] as? Number)?.toInt()
                                 if (normX != null && normY != null) {
-                                    val realX = (normX / 999.0 * screenWidth).toInt()
-                                    val realY = (normY / 999.0 * screenHeight).toInt()
-                                    agentTools.doubleTap(realX, realY)
+                                    val realX = toPixel(normX, screenWidth)
+                                    val realY = toPixel(normY, screenHeight)
+                                    actionFeedback = agentTools.doubleTap(realX, realY)
                                 }
                             }
                         }
@@ -480,9 +542,9 @@ class AutoGLMModule : BaseModule() {
                                 val normX = (rawPos[0] as? Number)?.toInt()
                                 val normY = (rawPos[1] as? Number)?.toInt()
                                 if (normX != null && normY != null) {
-                                    val realX = (normX / 999.0 * screenWidth).toInt()
-                                    val realY = (normY / 999.0 * screenHeight).toInt()
-                                    agentTools.longPress(realX, realY)
+                                    val realX = toPixel(normX, screenWidth)
+                                    val realY = toPixel(normY, screenHeight)
+                                    actionFeedback = agentTools.longPress(realX, realY)
                                 }
                             }
                         }
@@ -510,12 +572,12 @@ class AutoGLMModule : BaseModule() {
                             agentTools.wait(10)
                             actionFeedback = "Paused 10s for manual takeover."
                         }
-                        "Back" -> agentTools.pressKey("back")
-                        "Home" -> agentTools.pressKey("home")
+                        "Back" -> { actionFeedback = agentTools.pressKey("back") }
+                        "Home" -> { actionFeedback = agentTools.pressKey("home") }
                         "Wait" -> {
                             val durationStr = command["duration"] as? String ?: "5"
                             val sec = durationStr.filter { it.isDigit() }.toIntOrNull() ?: 5
-                            agentTools.wait(sec)
+                            actionFeedback = agentTools.wait(sec)
                         }
                         "finish" -> {
                             val msg = command["message"] as? String ?: "Done"
@@ -535,9 +597,11 @@ class AutoGLMModule : BaseModule() {
                         }
                     }
 
+                    // 把动作的真实结果回传：原来固定写 "executed"，swipe 失败/坐标非法模型完全不知道，
+                    // 会继续重复同一个失效动作。
                     messages.put(JSONObject().apply {
                         put("role", "user")
-                        put("content", "Action '$actionName' executed.")
+                        put("content", actionFeedback)
                     })
 
                 } else {

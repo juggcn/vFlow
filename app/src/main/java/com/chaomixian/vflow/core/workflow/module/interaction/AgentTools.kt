@@ -42,6 +42,23 @@ class AgentTools(private val context: ExecutionContext) {
     private val appContext = context.applicationContext
     private val TAG = "AgentTools"
 
+    private companion object {
+        /** 手势回调超时：无障碍服务中途掉线时 dispatchGesture 的 callback 不会回来，
+         *  直接判失败，避免整条工作流无限挂起（正常手势远小于该值）。 */
+        private const val GESTURE_TIMEOUT_MS = 8_000L
+    }
+
+    /**
+     * 带超时地等待手势结果。
+     * 超时按「手势未完成」处理，让上层继续走重试或换策略，而不是卡死。
+     */
+    private suspend fun awaitGesture(deferred: CompletableDeferred<Boolean>): Boolean {
+        return withTimeoutOrNull(GESTURE_TIMEOUT_MS) { deferred.await() } ?: run {
+            DebugLogger.w(TAG, "手势回调超时（${GESTURE_TIMEOUT_MS}ms），按失败处理")
+            false
+        }
+    }
+
     // 获取目标显示 ID，默认为 0 (主屏幕)
     // 现在 variables 是 Map<String, VObject>，使用 getVariableAsInt 获取
     private val targetDisplayId: Int
@@ -197,7 +214,7 @@ class AgentTools(private val context: ExecutionContext) {
                 override fun onCompleted(g: GestureDescription?) { deferred.complete(true) }
                 override fun onCancelled(g: GestureDescription?) { deferred.complete(false) }
             }, null)
-            if (deferred.await()) return "Success: Long Pressed at ($x, $y)."
+            if (awaitGesture(deferred)) return "Success: Long Pressed at ($x, $y)."
         }
         // Shell 回退
         if (ShellManager.isShizukuActive(appContext)) {
@@ -241,7 +258,7 @@ class AgentTools(private val context: ExecutionContext) {
                 override fun onCompleted(g: GestureDescription?) { deferred.complete(true) }
                 override fun onCancelled(g: GestureDescription?) { deferred.complete(false) }
             }, null)
-            if (deferred.await()) return "Success: Double Tapped at ($x, $y)."
+            if (awaitGesture(deferred)) return "Success: Double Tapped at ($x, $y)."
         }
 
         // Shell 回退 (模拟两次 tap)
@@ -542,7 +559,7 @@ class AgentTools(private val context: ExecutionContext) {
                 override fun onCompleted(g: GestureDescription?) { deferred.complete(true) }
                 override fun onCancelled(g: GestureDescription?) { deferred.complete(false) }
             }, null)
-            if (deferred.await()) return true
+            if (awaitGesture(deferred)) return true
         }
         if (ShellManager.isShizukuActive(appContext)) {
             val result = ShellManager.execShellCommand(appContext, "input tap $x $y", ShellManager.ShellMode.AUTO)
@@ -658,7 +675,7 @@ class AgentTools(private val context: ExecutionContext) {
             override fun onCompleted(g: GestureDescription?) { deferred.complete(true) }
             override fun onCancelled(g: GestureDescription?) { deferred.complete(false) }
         }, null)
-        return if (deferred.await()) "Success: 向 $direction 滚动完成。" else "Failed: 滚动被取消。"
+        return if (awaitGesture(deferred)) "Success: 向 $direction 滚动完成。" else "Failed: 滚动被取消。"
     }
 
     suspend fun pressKey(action: String): String {
@@ -718,7 +735,7 @@ class AgentTools(private val context: ExecutionContext) {
                 override fun onCompleted(g: GestureDescription?) { deferred.complete(true) }
                 override fun onCancelled(g: GestureDescription?) { deferred.complete(false) }
             }, null)
-            if (deferred.await()) return "Success: Swiped from ($startX, $startY) to ($endX, $endY)."
+            if (awaitGesture(deferred)) return "Success: Swiped from ($startX, $startY) to ($endX, $endY)."
         }
 
         // Shell 回退
