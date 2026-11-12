@@ -179,6 +179,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             )
         }
         artifactStores.remove(conversationId)
+        toolRounds.remove(conversationId)
         processNextQueuedPromptIfIdle()
     }
 

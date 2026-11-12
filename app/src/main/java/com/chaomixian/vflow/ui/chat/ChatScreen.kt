@@ -375,12 +375,12 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(top = contentPadding.calculateTopPadding())
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 12.dp),
             contentPadding = PaddingValues(
-                top = 10.dp,
+                top = 6.dp,
                 bottom = messageListBottomPadding,
             ),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (activeConversation != null && activeConversation.messages.isNotEmpty()) {
                 val messages = activeConversation.messages
@@ -395,7 +395,7 @@ fun ChatScreen(
                         availableToolsByName = availableToolsByName,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(top = if (roleSwitched) 10.dp else 0.dp),
+                            .padding(top = if (roleSwitched) 6.dp else 0.dp),
                         onApproveToolCalls = chatViewModel::approveToolCalls,
                         onRejectToolCalls = chatViewModel::rejectToolCalls,
                         onRerunToolCalls = chatViewModel::rerunToolCalls,
@@ -1058,21 +1058,21 @@ private fun UserMessageBubble(
                 text = stringResource(R.string.chat_role_you),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 6.dp),
+                modifier = Modifier.padding(horizontal = 4.dp),
             )
             Surface(
                 shape = RoundedCornerShape(
-                    topStart = 24.dp,
-                    topEnd = 24.dp,
-                    bottomStart = 24.dp,
-                    bottomEnd = 10.dp,
+                    topStart = 20.dp,
+                    topEnd = 20.dp,
+                    bottomStart = 20.dp,
+                    bottomEnd = 8.dp,
                 ),
                 color = MaterialTheme.colorScheme.primaryContainer,
                 tonalElevation = 0.dp,
             ) {
                 Column(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     Text(
                         text = message.content,
@@ -1175,19 +1175,19 @@ private fun AssistantMessageCard(
     ) {
         Surface(
             modifier = Modifier.widthIn(max = 560.dp),
-            shape = RoundedCornerShape(30.dp),
+            shape = RoundedCornerShape(22.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             tonalElevation = 0.dp,
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(9.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Surface(
@@ -1211,7 +1211,7 @@ private fun AssistantMessageCard(
                     if (!message.isPending && message.content.isNotBlank()) {
                         FilledTonalIconButton(
                             onClick = onCopyMessage,
-                            modifier = Modifier.size(30.dp),
+                            modifier = Modifier.size(26.dp),
                             colors = IconButtonDefaults.filledTonalIconButtonColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                                 contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1236,15 +1236,15 @@ private fun AssistantMessageCard(
                     if (hasReasoning) {
                         Surface(
                             onClick = { reasoningExpanded = !reasoningExpanded },
-                            shape = RoundedCornerShape(22.dp),
+                            shape = RoundedCornerShape(18.dp),
                             color = MaterialTheme.colorScheme.surface,
                             tonalElevation = 0.dp,
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
@@ -1280,7 +1280,7 @@ private fun AssistantMessageCard(
                             ) {
                                 ChatMarkdownContent(
                                     markdown = message.reasoningContent.orEmpty().trim(),
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
+                                    modifier = Modifier.padding(horizontal = 13.dp, vertical = 10.dp),
                                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
@@ -1600,8 +1600,8 @@ private fun ToolMessageCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1723,15 +1723,15 @@ private fun ErrorMessageCard(
     ) {
         Surface(
             modifier = Modifier.widthIn(max = 520.dp),
-            shape = RoundedCornerShape(26.dp),
+            shape = RoundedCornerShape(22.dp),
             color = MaterialTheme.colorScheme.errorContainer,
             tonalElevation = 0.dp,
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                    .padding(horizontal = 13.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     text = stringResource(R.string.chat_role_error),
@@ -1799,7 +1799,7 @@ private fun MessageFooterRow(
         if (showCopy) {
             FilledTonalIconButton(
                 onClick = onCopyMessage,
-                modifier = Modifier.size(30.dp),
+                modifier = Modifier.size(26.dp),
                 colors = IconButtonDefaults.filledTonalIconButtonColors(
                     containerColor = containerTint,
                     contentColor = contentColor.copy(alpha = 0.9f),

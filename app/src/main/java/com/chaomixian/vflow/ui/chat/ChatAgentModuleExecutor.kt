@@ -34,9 +34,11 @@ import java.util.Stack
 import java.util.UUID
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -203,19 +205,26 @@ internal class ChatAgentModuleExecutor(
             LOG_TAG,
             "Executing prepared batch items=${batch.items.size} risk=${batch.riskLevel}"
         )
-        return batch.items.map { item ->
-            DebugLogger.i(LOG_TAG, "Tool start ${item.describeForLog()}")
-            when (item) {
-                is ChatPreparedToolItem.ImmediateResult -> item.result
-                is ChatPreparedToolItem.Ready -> executeReadyTool(item, artifactStore)
-                is ChatPreparedToolItem.NativeReady -> nativeToolExecutor.execute(item, artifactStore)
-                is ChatPreparedToolItem.TemporaryWorkflow -> executeTemporaryWorkflow(item, artifactStore)
-                is ChatPreparedToolItem.SaveWorkflow -> executeSaveWorkflow(item)
-            }.also { result ->
-                DebugLogger.i(
-                    LOG_TAG,
-                    "Tool end ${item.describeForLog()} status=${result.status} output=${result.outputText.compactForLog()}"
-                )
+        // 工具执行统一挪到 Dispatchers.Default。
+        // 调用方是 viewModelScope（Main），而模块执行的是 OCR、截图、图像匹配、Shell 这类重活，
+        // 177 个模块里只有 45 个自己切了 IO，其余会直接压在主线程上卡住界面。
+        // 这里与 WorkflowExecutor 的线程模型保持一致（它用 Dispatchers.Default 跑步骤），
+        // 需要主线程的模块本来就会自己 withContext(Dispatchers.Main)。
+        return withContext(Dispatchers.Default) {
+            batch.items.map { item ->
+                DebugLogger.i(LOG_TAG, "Tool start ${item.describeForLog()}")
+                when (item) {
+                    is ChatPreparedToolItem.ImmediateResult -> item.result
+                    is ChatPreparedToolItem.Ready -> executeReadyTool(item, artifactStore)
+                    is ChatPreparedToolItem.NativeReady -> nativeToolExecutor.execute(item, artifactStore)
+                    is ChatPreparedToolItem.TemporaryWorkflow -> executeTemporaryWorkflow(item, artifactStore)
+                    is ChatPreparedToolItem.SaveWorkflow -> executeSaveWorkflow(item)
+                }.also { result ->
+                    DebugLogger.i(
+                        LOG_TAG,
+                        "Tool end ${item.describeForLog()} status=${result.status} output=${result.outputText.compactForLog()}"
+                    )
+                }
             }
         }
     }
