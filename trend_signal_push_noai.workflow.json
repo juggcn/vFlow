@@ -1,0 +1,110 @@
+{
+  "id": "cf824452-a1b3-4851-b1e1-e72ed469050b",
+  "name": "主趋势线信号推送（QQ·无 AI）",
+  "description": "交易时段每 10 分钟检查主趋势线，出现绿转红/红转绿时，把主趋势线模块的汇总文本直接通过 QQ 官方机器人推送",
+  "isEnabled": true,
+  "version": "1.0.0",
+  "vFlowLevel": 1,
+  "folderId": "",
+  "order": 0,
+  "cardIconRes": "rounded_sms_24",
+  "cardThemeColor": "#3B82F6",
+  "modifiedAt": 1795160804277,
+  "isFavorite": false,
+  "wasEnabledBeforePermissionsLost": false,
+  "author": "",
+  "homepage": "",
+  "tags": [
+    "股票",
+    "推送"
+  ],
+  "triggers": [
+    {
+      "id": "695d046b-b56d-4cc7-ab73-4d4c9a6a9c42",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.trigger.time",
+      "parameters": {
+        "mode": "window",
+        "time": "09:35",
+        "windows": [
+          "09:30-11:30",
+          "13:00-15:00"
+        ],
+        "interval_minutes": 10,
+        "days": [
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "9f79069c-8b89-4d69-bc50-cdd45dd41391",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.variable.create",
+      "parameters": {
+        "variableName": "标的代码",
+        "type": "string",
+        "value": "513050",
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "02ad4af3-7c24-40fc-b942-c543a440d15e",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.user.main_trend",
+      "parameters": {
+        "codes": "{{vars.标的代码}}",
+        "period": "5分钟",
+        "source": "auto",
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "81059041-c22f-4bd8-956a-ddd00cff60bc",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.logic.if.start",
+      "parameters": {
+        "operator": "not_equals",
+        "input1": "{{02ad4af3-7c24-40fc-b942-c543a440d15e.status}}",
+        "value1": "no_change",
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "c5101864-37c6-4ac6-8786-ca3260ec67b5",
+      "indentationLevel": 1,
+      "isDisabled": false,
+      "moduleId": "vflow.network.bot_push",
+      "parameters": {
+        "title": "主趋势线信号",
+        "content": "{{02ad4af3-7c24-40fc-b942-c543a440d15e.summary}}",
+        "format": "text",
+        "enable_qq": true,
+        "qq_app_id": "",
+        "qq_app_secret": "",
+        "qq_handshake_timeout": 60,
+        "qq_msg_id": "",
+        "proxy_mode": "follow_global",
+        "proxy": "",
+        "timeout": 15,
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "b6a2f4d0-8c31-4f0b-9a1e-2d7c5b93e8a1",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.logic.if.end",
+      "parameters": {}
+    }
+  ]
+}

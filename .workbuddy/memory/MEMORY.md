@@ -5,12 +5,13 @@
 ## 项目性质
 
 Android 应用（不是固件工程）。Kotlin 2.3.20 + AGP 9.0.1 + Gradle 9.2.1，compileSdk/targetSdk 36，
-minSdk 29，`versionCode 49 / versionName 1.5.3-pr1`。
+minSdk 29，`versionCode 53 / versionName 1.5.7-pr1`。
 Gradle 模块：`:app`（本体）+ `:core`（服务端逻辑，用 R8 的 D8 单独编成
 `app/src/main/assets/vFlowCore.dex`，由 `:core:buildDex` 任务产出，app 的 `preBuild` 依赖它）。
 `namespace = com.chaomixian.vflow`，目录 `app/src/main/java/com/chaomixian/vflow/`。
 内含 CMake 原生代码（`app/src/main/cpp/`，ppocr_v5 + OpenCV），因此必须装 NDK + CMake。
-`app/build.gradle.kts` 里 `splits.abi` 开了 4 个 ABI 且 `isUniversalApk = true` → 一次构建出 5 个 APK。
+**ABI 用 `splits.abi` 分包**（4 个 ABI + universal，一次出 5 个 APK）。
+`-Pabi=arm64-v8a` 可只打一个 ABI，省掉其余 native 编译。
 
 ## 本机构建环境（已探明）
 
@@ -45,7 +46,24 @@ cd /d/work/code/vFlow && env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy \
   缓存后约 1 分 20 秒。
 - 产物：`app/build/outputs/apk/debug/app-{arm64-v8a,armeabi-v7a,x86,x86_64,universal}-debug.apk`
   （arm64 约 196MB，universal 约 475MB）。**真机装 `app-arm64-v8a-debug.apk`。**
+  只打单 ABI 加 `-Pabi=arm64-v8a`，产物变成单个 `app-debug.apk`。
   签名用仓库根目录的 `debug.keystore`（口令 android / androiddebugkey / android）。
+
+## Python 脚本模块（已移除，2026-11-20）
+
+曾用过 Chaquopy 17.2.0 加 `vflow.system.python` 模块，**用户决定不做，整套回滚了**：
+`app/build.gradle.kts` 的 `com.chaquo.python` 插件、`chaquopy {}` 块、`ndk.abiFilters`、
+`local.properties` 的 `python.build`、`app/src/main/python/`、
+`PythonExecutor.kt` / `PythonModule*.kt` / `SoraPythonEditorConfig.kt` / `SoraTextMateSupport.kt`、
+textmate 的 python 语法文件、三套 strings 里的 python 词条，全部删除；
+`languages.json`、`SoraJavaScriptEditorConfig.kt`、`proguard-rules.pro` 已还原。
+
+结论留档（以后若再想做，不用重新趟）：
+- 运行时只有 **CPython 真身**这一条路（Jython 是 Python2，MicroPython 要自己编 NDK）。
+- Chaquopy 要求 `ndk.abiFilters`，与 AGP 9 的 `splits.abi` **互斥** —— 想做就得放弃 5 APK 分包。
+- Python 3.13 只有 64 位库，32 位（armeabi-v7a / x86）直接失去支持。
+- 运行时本体省不掉：libpython 5.2MB + ssl/crypto/sqlite ≈5.5MB，加标准库，APK 至少 +13MB。
+
 
 ## 已知构建故障
 

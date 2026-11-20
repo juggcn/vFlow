@@ -2182,6 +2182,7 @@
     <string name="msg_vflow_system_js_preparing">JavaScript 環境を準備中...</string>
     <string name="msg_vflow_system_js_executing">JavaScript スクリプトを実行中...</string>
     <string name="msg_vflow_system_js_completed">スクリプトの実行が完了しました</string>
+
     <string name="module_vflow_core_front_app_desc">現在フォアグラウンドにあるアプリのパッケージ名を取得します。</string>
     <string name="module_vflow_core_front_app_name">前面アプリを取得</string>
     <string name="output_vflow_core_front_app_packageName_name">アプリのパッケージ名</string>
@@ -2980,16 +2981,6 @@
     <string name="option_vflow_gkd_enable_all">すべてのルール（推奨）</string>
     <string name="option_vflow_gkd_enable_subscription_default">購読の既定のみ</string>
     <string name="hint_vflow_gkd_enable_mode">コミュニティの GKD 購読は通常「スプラッシュ広告」だけが既定で有効で、全画面広告・局部広告・更新通知などのグループは enable が false のため、GKD アプリでグループごとに手動で有効化する必要があります。vFlow にはその切り替え UI がないため、「購読の既定のみ」では広告ルールの大半が失われます。「すべてのルール」は購読の既定を無視してすべて読み込みます。</string>
-    <string name="option_vflow_integration_main_trend_period_5">5分</string>
-    <string name="option_vflow_integration_main_trend_period_15">15分</string>
-    <string name="option_vflow_integration_main_trend_period_30">30分</string>
-    <string name="option_vflow_integration_main_trend_period_60">60分</string>
-    <string name="option_vflow_integration_main_trend_period_day">日足</string>
-    <string name="option_vflow_integration_main_trend_period_week">週足</string>
-    <string name="option_vflow_integration_main_trend_source_auto">自動</string>
-    <string name="option_vflow_integration_main_trend_source_tencent">Tencent</string>
-    <string name="option_vflow_integration_main_trend_source_eastmoney">Eastmoney</string>
-    <string name="option_vflow_integration_main_trend_source_sina">Sina</string>
     <string name="option_vflow_network_mcp_client_action_call">ツールを呼び出す</string>
     <string name="option_vflow_network_mcp_client_action_list">ツール一覧</string>
 </resources>

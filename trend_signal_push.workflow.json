@@ -1,0 +1,131 @@
+{
+  "id": "f81991c9-4195-4d59-b8fd-a7fc468fd564",
+  "name": "主趋势线信号推送（QQ）",
+  "description": "交易时段每 10 分钟检查主趋势线，出现绿转红/红转绿时让 AI 写一条播报，通过 QQ 官方机器人推送",
+  "isEnabled": true,
+  "version": "1.0.0",
+  "vFlowLevel": 1,
+  "folderId": "",
+  "order": 0,
+  "cardIconRes": "rounded_sms_24",
+  "cardThemeColor": "#3B82F6",
+  "modifiedAt": 1795160804277,
+  "isFavorite": false,
+  "wasEnabledBeforePermissionsLost": false,
+  "author": "",
+  "homepage": "",
+  "tags": [
+    "股票",
+    "推送"
+  ],
+  "triggers": [
+    {
+      "id": "5606901b-0e31-483e-adb9-518f66b938ed",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.trigger.time",
+      "parameters": {
+        "mode": "window",
+        "time": "09:35",
+        "windows": [
+          "09:30-11:30",
+          "13:00-15:00"
+        ],
+        "interval_minutes": 10,
+        "days": [
+          2,
+          3,
+          4,
+          5,
+          6
+        ]
+      }
+    }
+  ],
+  "steps": [
+    {
+      "id": "b8ef472c-37cf-4b84-9530-300b0d89e353",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.variable.create",
+      "parameters": {
+        "variableName": "标的代码",
+        "type": "string",
+        "value": "513050",
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "437c72a8-3248-47f0-8733-c93f9688b03a",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.user.main_trend",
+      "parameters": {
+        "codes": "{{vars.标的代码}}",
+        "period": "5分钟",
+        "source": "auto",
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "5b5dd771-943b-4b7d-909d-2a4e4752922c",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.logic.if.start",
+      "parameters": {
+        "operator": "not_equals",
+        "input1": "{{437c72a8-3248-47f0-8733-c93f9688b03a.status}}",
+        "value1": "no_change",
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "410daf56-675e-426a-91b2-d8db5bf9e98b",
+      "indentationLevel": 1,
+      "isDisabled": false,
+      "moduleId": "vflow.ai.completion",
+      "parameters": {
+        "preset_id": "",
+        "preset_name": "deepseek-flash",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "sk-1703fbaf057048cda8ec96d744ad0129",
+        "model": "deepseek-flash",
+        "system_prompt": "你是简洁的行情播报助手，只输出可直接发送的中文通知正文，不使用任何 Markdown 符号。",
+        "prompt": "「主趋势线」监控刚跑完：主趋势线由绿转红是买点，由红转绿是卖点。\n请把它写成一条手机通知：\n1. 第一行只给结论，从「出现买点」「出现卖点」「买卖信号同时出现」里选一句；\n2. 之后每个标的占一行，格式：代码 名称 收盘价 方向 信号，方向用 ↑ 或 ↓；\n3. 直接输出正文，不要标题、不要解释、不要 Markdown、不要「好的」之类的开场白；\n4. 全文不超过 150 字。\n\n买点标的：{{437c72a8-3248-47f0-8733-c93f9688b03a.green_to_red}}\n卖点标的：{{437c72a8-3248-47f0-8733-c93f9688b03a.red_to_green}}\n逐标的明细：\n{{437c72a8-3248-47f0-8733-c93f9688b03a.summary}}",
+        "temperature": 0.3,
+        "proxy_mode": "follow_global",
+        "proxy": "",
+        "__error_policy": "RETRY",
+        "__retry_count": 2,
+        "__retry_interval": 3000
+      }
+    },
+    {
+      "id": "6891f278-e087-48b9-931b-a81dcccf0129",
+      "indentationLevel": 1,
+      "isDisabled": false,
+      "moduleId": "vflow.network.bot_push",
+      "parameters": {
+        "title": "",
+        "content": "{{410daf56-675e-426a-91b2-d8db5bf9e98b.result}}",
+        "format": "text",
+        "enable_qq": true,
+        "qq_app_id": "",
+        "qq_app_secret": "",
+        "qq_handshake_timeout": 60,
+        "qq_msg_id": "",
+        "proxy_mode": "follow_global",
+        "proxy": "",
+        "timeout": 15,
+        "__error_policy": "STOP"
+      }
+    },
+    {
+      "id": "185bb4d7-104c-43ad-932d-5d6dfb3381e5",
+      "indentationLevel": 0,
+      "isDisabled": false,
+      "moduleId": "vflow.logic.if.end",
+      "parameters": {}
+    }
+  ]
+}

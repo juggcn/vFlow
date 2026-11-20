@@ -25,6 +25,16 @@ object ModuleRegistry {
     private val modules = mutableMapOf<String, ActionModule>()
     private var isCoreInitialized = false // 这里的Core是指内建额度模块
 
+    /**
+     * 已从安装包移出的模块：旧 id → 用户模块 id。
+     * 主趋势线改为本地 Lua 模块分发（manifest id 为 vflow.user.main_trend），
+     * 旧工作流里存的仍是内置 id，这里做一次转发，避免导入后变成「模块不存在」。
+     * 用户模块未安装时依旧取不到，属预期。
+     */
+    private val removedModuleIdAliases = mapOf(
+        "vflow.integration.main_trend" to "vflow.user.main_trend"
+    )
+
     fun register(module: ActionModule, context: Context? = null) {
         if (modules.containsKey(module.id)) {
             DebugLogger.w(TAG,"警告: 模块ID '${module.id}' 被重复注册。")
@@ -37,7 +47,8 @@ object ModuleRegistry {
         }
     }
 
-    fun getModule(id: String): ActionModule? = modules[id]
+    fun getModule(id: String): ActionModule? =
+        modules[id] ?: removedModuleIdAliases[id]?.let { modules[it] }
     fun getAllModules(): List<ActionModule> = modules.values.toList()
 
     fun getModulesByCategory(): Map<String, List<ActionModule>> {
@@ -176,6 +187,7 @@ object ModuleRegistry {
         register(DiscordPushModule(), context)
         register(WebhookPushModule(), context)
         register(TelegramPushModule(), context)
+        register(BotPushModule(), context)
         register(AIModule(), context)
         register(FeishuSendMessageModule(), context)
         register(FeishuGetMessageHistoryModule(), context)
@@ -227,7 +239,6 @@ object ModuleRegistry {
         // 应用集成
         register(FlClashModule(), context)
         register(ClashMetaModule(), context)
-        register(MainTrendModule(), context)
         register(IThomeCheckInModule(), context)
         register(AlipayShortcutsModule(), context)
         register(WeChatShortcutsModule(), context)
