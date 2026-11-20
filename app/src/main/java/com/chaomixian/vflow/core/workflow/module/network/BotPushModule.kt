@@ -72,10 +72,11 @@ import java.util.concurrent.TimeUnit
  *
  * 两条通道，各自独立开关，一次执行可以同时发：
  *   微信个人号      扫码绑定，走官方 ClawBot（ilink）接口，只支持单聊
- *   QQ 官方机器人   AppID + AppSecret，会话 ID 靠编辑器里的「QQ 握手」按钮绑定
+ *   QQ 官方机器人   AppID + AppSecret
  *
- * 微信通道先用「微信扫码绑定」拿 bot_token，之后走 sendmessage；
- * 它必须带 context_token，而 context_token 只在你给机器人发过消息后才有，所以绑定流程会多等一条消息。
+ * 两条通道的连接方式一样：先在微信 / QQ 里给机器人发一条消息，再点卡片里的「测试连接」确认。
+ * 微信通道借这一步拿 bot_token 和 context_token（sendmessage 必须带），
+ * QQ 通道借这一步从网关收到的那条消息里取会话 ID。
  */
 class BotPushModule : BaseModule() {
 
@@ -93,7 +94,7 @@ class BotPushModule : BaseModule() {
 
         private const val DEFAULT_TIMEOUT = 15L
 
-        /** QQ 握手记下的会话 ID 存这里，key 按 AppID 区分。 */
+        /** 点「测试连接」时记下的会话 ID 存这里，key 按 AppID 区分。 */
         private const val BOT_PREFS = "vflow_bot_push"
 
         private const val QQ_TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
@@ -111,6 +112,9 @@ class BotPushModule : BaseModule() {
         private const val KEY_WECHAT_BOT = "wechat_bot_id"
         private const val KEY_WECHAT_USER = "wechat_user_id"
         private const val KEY_WECHAT_CONTEXT = "wechat_context_token"
+
+        /** 账号池：多个微信号的凭证存成一个 JSON 数组，步骤里按 key 选一个用。 */
+        private const val KEY_WECHAT_ACCOUNTS = "wechat_accounts"
     }
 
     override val id = "vflow.network.bot_push"
@@ -183,12 +187,12 @@ class BotPushModule : BaseModule() {
         ),
         InputDefinition(
             id = "qq_handshake_timeout",
-            name = "握手等待(秒)",
+            name = "连接等待(秒)",
             staticType = ParameterType.NUMBER,
             defaultValue = 60,
             isFolded = true,
             visibility = InputVisibility.whenTrue("enable_qq"),
-            hint = "点「QQ 握手」后等第一条消息的时长"
+            hint = "点「测试连接」后等第一条消息的时长"
         ),
         InputDefinition(
             id = "qq_msg_id",
@@ -209,7 +213,17 @@ class BotPushModule : BaseModule() {
             defaultValue = false,
             acceptsMagicVariable = false,
             inputStyle = InputStyle.SWITCH,
-            hint = "点卡片里的「微信扫码绑定」，用手机微信扫一下即可；只能发单聊，服务端约 7 条/5 分钟"
+            hint = "点卡片里的「测试连接」，用手机微信扫一下即可；只能发单聊，服务端约 7 条/5 分钟"
+        ),
+        InputDefinition(
+            id = "wechat_account",
+            name = "发送用微信号",
+            staticType = ParameterType.STRING,
+            defaultValue = "",
+            acceptsMagicVariable = false,
+            isFolded = true,
+            visibility = InputVisibility.whenTrue("enable_wechat"),
+            hint = "本机绑了多个微信号时选一个；在通道卡片里点「切换 / 添加微信号」设置"
         )
     ) + moduleProxyInputDefinitions() + listOf(
         InputDefinition(
@@ -254,7 +268,7 @@ class BotPushModule : BaseModule() {
     /** 卡片右上角的状态：QQ 这类必填项为空但有绑定结果的，算「已绑定」。 */
     internal fun channelBoundLabel(params: Map<String, Any?>, enableId: String): String? = when (enableId) {
         "enable_qq" -> qqBoundLabel((params["qq_app_id"] as? String).orEmpty().trim())
-        "enable_wechat" -> wechatBoundLabel()
+        "enable_wechat" -> resolveWechatAccount((params["wechat_account"] as? String).orEmpty())?.label
         else -> null
     }
 
@@ -267,7 +281,7 @@ class BotPushModule : BaseModule() {
         val appId = (params["qq_app_id"] as? String).orEmpty().trim()
         val appSecret = (params["qq_app_secret"] as? String).orEmpty().trim()
         if (appId.isEmpty() || appSecret.isEmpty()) {
-            toast("先填 QQ AppID 和 AppSecret，再点握手")
+            toast("先填 QQ AppID 和 AppSecret，再点「测试连接」")
             return
         }
         val waitSeconds = (
@@ -275,7 +289,7 @@ class BotPushModule : BaseModule() {
                 ?: (params["qq_handshake_timeout"] as? String)?.toLongOrNull()
                 ?: 60L
             ).coerceIn(10, 300)
-        toast("正在等 QQ 消息：${waitSeconds} 秒内给机器人发一条（群里要 @ 它）")
+        toast("正在测试连接：${waitSeconds} 秒内给机器人发一条（群里要 @ 它）")
 
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         scope.launch {
@@ -292,11 +306,11 @@ class BotPushModule : BaseModule() {
             result.onSuccess { handshake ->
                 saveQqTarget(appId, handshake)
                 withContext(Dispatchers.Main) {
-                    toast("已绑定${typeLabel(handshake.type)}：${handshake.id}")
+                    toast("已连接${typeLabel(handshake.type)}：${handshake.id}")
                 }
             }.onFailure { error ->
                 withContext(Dispatchers.Main) {
-                    toast("握手失败：${error.message ?: "未知错误"}")
+                    toast("连接失败：${error.message ?: "未知错误"}")
                 }
             }
             scope.cancel()
@@ -324,8 +338,18 @@ class BotPushModule : BaseModule() {
         }
 
         val missing = when {
-            CHANNEL_WECHAT in enabled && loadWechatBinding()?.contextToken.isNullOrEmpty() ->
-                "微信：还没扫码绑定，或绑定后没给机器人发过消息"
+            CHANNEL_WECHAT in enabled -> when (val account = resolveWechatAccount(params["wechat_account"] as? String)) {
+                null -> if (wechatAccounts().isEmpty()) {
+                    "微信：还没扫码绑定"
+                } else {
+                    "微信：还没选微信号（点卡片里的「切换 / 添加微信号」）"
+                }
+                else -> if (account.contextToken.isEmpty()) {
+                    "微信：绑定后还没收到过你的消息，先给机器人发一条"
+                } else {
+                    null
+                }
+            }
             CHANNEL_QQ in enabled && listOf("qq_app_id", "qq_app_secret")
                 .any { (params[it] as? String).isNullOrBlank() } -> "QQ 官方机器人：AppID / AppSecret"
             else -> null
@@ -391,7 +415,11 @@ class BotPushModule : BaseModule() {
             onProgress(ProgressUpdate("正在推送到$channel"))
             val result = try {
                 when (channel) {
-                    CHANNEL_WECHAT -> sendWechat(client, body)
+                    CHANNEL_WECHAT -> sendWechat(
+                        client,
+                        body,
+                        context.getVariableAsString("wechat_account", "")
+                    )
                     else -> sendQq(context, client, body)
                 }
             } catch (e: IOException) {
@@ -466,16 +494,20 @@ class BotPushModule : BaseModule() {
      *     所以绑定流程会额外等一条你的消息。
      * 另外这是单聊通道（发不了群），服务端限流约 7 条 / 5 分钟。
      */
-    private fun sendWechat(client: OkHttpClient, body: String): ChannelResult {
-        val binding = loadWechatBinding()
+    private fun sendWechat(client: OkHttpClient, body: String, accountKey: String): ChannelResult {
+        val binding = resolveWechatAccount(accountKey)
             ?: return ChannelResult(
                 CHANNEL_WECHAT, false, 0,
-                error = "还没绑定微信，点通道卡片里的「微信扫码绑定」"
+                error = if (wechatAccounts().isEmpty()) {
+                    "还没绑定微信，点通道卡片里的「测试连接」"
+                } else {
+                    "绑了多个微信号，先在通道卡片里选一个"
+                }
             )
         if (binding.contextToken.isEmpty()) {
             return ChannelResult(
                 CHANNEL_WECHAT, false, 0,
-                error = "缺少会话凭证：先在微信里给机器人发一条消息，再点一次「微信扫码绑定」"
+                error = "缺少会话凭证：先在微信里给机器人发一条消息，再点一次「测试连接」"
             )
         }
 
@@ -532,18 +564,18 @@ class BotPushModule : BaseModule() {
     }
 
     /**
-     * 编辑器里的「发送测试消息」：微信这条最容易出现「扫码成功但发不出去」（缺 context_token），
+     * 编辑器里的「测试连接」（微信分支）：微信这条最容易出现「扫码成功但发不出去」（缺 context_token），
      * 先打一发就能确认，不用等整条工作流跑起来才发现。
      */
-    internal fun sendTestMessage() {
-        toast("正在发送测试消息…")
+    internal fun sendTestMessage(accountKey: String) {
+        toast("正在测试连接…")
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         scope.launch {
             val client = OkHttpClient.Builder()
                 .connectTimeout(DEFAULT_TIMEOUT, TimeUnit.SECONDS)
                 .readTimeout(DEFAULT_TIMEOUT, TimeUnit.SECONDS)
                 .build()
-            val result = sendWechat(client, "vFlow 测试消息\n收到这条说明「$CHANNEL_WECHAT」配置可用。")
+            val result = sendWechat(client, "vFlow 测试消息\n收到这条说明「$CHANNEL_WECHAT」配置可用。", accountKey)
             withContext(Dispatchers.Main) {
                 toast(
                     if (result.success) "已发出，去「$CHANNEL_WECHAT」里看看"
@@ -554,8 +586,13 @@ class BotPushModule : BaseModule() {
         }
     }
 
-    /** 已绑定的微信号。contextToken 要等它收到过消息才有，可能暂时为空。 */
-    private data class WechatBinding(
+    /**
+     * 已绑定的微信号。一个微信号一套凭证，步骤里按 key 选一个用。
+     * contextToken 要等它收到过消息才有，可能暂时为空。
+     */
+    internal data class WechatAccount(
+        val key: String,
+        val label: String,
         val token: String,
         val botId: String,
         val userId: String,
@@ -570,35 +607,110 @@ class BotPushModule : BaseModule() {
 
     private fun wechatPrefs() = appContext.getSharedPreferences(BOT_PREFS, Context.MODE_PRIVATE)
 
-    private fun loadWechatBinding(): WechatBinding? {
+    /** 账号 key 用 userId 尾部，稳定且能直接读；label 给人看。 */
+    private fun wechatAccountKey(userId: String): String = "wx_" + userId.takeLast(6)
+
+    private fun wechatAccountLabel(userId: String): String = "尾号 " + userId.takeLast(4)
+
+    /** 读账号池；老版本只存了一份单账号凭证，这里顺手搬进列表。 */
+    internal fun wechatAccounts(): MutableList<WechatAccount> {
         val prefs = wechatPrefs()
-        val token = prefs.getString(KEY_WECHAT_TOKEN, null).orEmpty()
-        val userId = prefs.getString(KEY_WECHAT_USER, null).orEmpty()
-        if (token.isEmpty() || userId.isEmpty()) return null
-        return WechatBinding(
-            token = token,
-            botId = prefs.getString(KEY_WECHAT_BOT, "").orEmpty(),
-            userId = userId,
-            contextToken = prefs.getString(KEY_WECHAT_CONTEXT, "").orEmpty()
-        )
+        val list = runCatching {
+            val raw = prefs.getString(KEY_WECHAT_ACCOUNTS, null)
+            if (raw.isNullOrEmpty()) return@runCatching mutableListOf()
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { index ->
+                val obj = array.optJSONObject(index) ?: return@mapNotNull null
+                val userId = obj.optString("userId")
+                if (userId.isEmpty()) return@mapNotNull null
+                WechatAccount(
+                    key = obj.optString("key").ifEmpty { wechatAccountKey(userId) },
+                    label = obj.optString("label").ifEmpty { wechatAccountLabel(userId) },
+                    token = obj.optString("token"),
+                    botId = obj.optString("botId"),
+                    userId = userId,
+                    contextToken = obj.optString("contextToken")
+                )
+            }.toMutableList()
+        }.getOrElse { mutableListOf() }
+
+        val legacyUser = prefs.getString(KEY_WECHAT_USER, "").orEmpty()
+        val legacyToken = prefs.getString(KEY_WECHAT_TOKEN, "").orEmpty()
+        if (legacyUser.isNotEmpty() && legacyToken.isNotEmpty() && list.none { it.userId == legacyUser }) {
+            list.add(
+                WechatAccount(
+                    key = wechatAccountKey(legacyUser),
+                    label = wechatAccountLabel(legacyUser),
+                    token = legacyToken,
+                    botId = prefs.getString(KEY_WECHAT_BOT, "").orEmpty(),
+                    userId = legacyUser,
+                    contextToken = prefs.getString(KEY_WECHAT_CONTEXT, "").orEmpty()
+                )
+            )
+            saveWechatAccounts(list)
+            // 搬完就把单账号的老 key 清掉，否则解绑后会被重新搬回来
+            prefs.edit()
+                .remove(KEY_WECHAT_TOKEN)
+                .remove(KEY_WECHAT_BOT)
+                .remove(KEY_WECHAT_USER)
+                .remove(KEY_WECHAT_CONTEXT)
+                .apply()
+        }
+        return list
     }
 
-    private fun saveWechatBinding(binding: WechatBinding) {
-        wechatPrefs().edit()
-            .putString(KEY_WECHAT_TOKEN, binding.token)
-            .putString(KEY_WECHAT_BOT, binding.botId)
-            .putString(KEY_WECHAT_USER, binding.userId)
-            .putString(KEY_WECHAT_CONTEXT, binding.contextToken)
-            .apply()
+    private fun saveWechatAccounts(accounts: List<WechatAccount>) {
+        val array = JSONArray()
+        accounts.forEach { account ->
+            array.put(
+                JSONObject()
+                    .put("key", account.key)
+                    .put("label", account.label)
+                    .put("token", account.token)
+                    .put("botId", account.botId)
+                    .put("userId", account.userId)
+                    .put("contextToken", account.contextToken)
+            )
+        }
+        wechatPrefs().edit().putString(KEY_WECHAT_ACCOUNTS, array.toString()).apply()
     }
 
-    internal fun wechatBoundLabel(): String? = loadWechatBinding()?.userId?.takeIf { it.isNotEmpty() }
+    /** 扫码回来后按 userId 覆盖，同一个微信号重复扫码不会越攒越多。 */
+    private fun upsertWechatAccount(account: WechatAccount): WechatAccount {
+        val list = wechatAccounts()
+        val index = list.indexOfFirst { it.userId == account.userId }
+        val saved = if (index >= 0) {
+            list[index] = account.copy(key = list[index].key, label = list[index].label)
+            list[index]
+        } else {
+            list.add(account)
+            account
+        }
+        saveWechatAccounts(list)
+        return saved
+    }
 
     /**
-     * 编辑器里的「微信扫码绑定」：
+     * 步骤里选中的账号。
+     * 新建步骤默认不选 —— 必须显式挑一个，避免误用别的步骤/别的号；
+     * 选的号被解绑了也返回 null，让校验去提示。
+     */
+    internal fun resolveWechatAccount(selectedKey: String?): WechatAccount? {
+        if (selectedKey.isNullOrBlank()) return null
+        return wechatAccounts().firstOrNull { it.key == selectedKey }
+    }
+
+    internal fun removeWechatAccount(key: String) {
+        val list = wechatAccounts()
+        list.removeAll { it.key == key }
+        saveWechatAccounts(list)
+    }
+
+    /**
+     * 编辑器里的「测试连接」（微信分支，未扫码时先走这里）：
      * 申请二维码 → 轮询扫码状态（过期自动换一张）→ 登录后再等你发一条消息拿 context_token。
      */
-    internal fun startWechatQrLogin(context: Context) {
+    internal fun startWechatQrLogin(context: Context, onBound: (String) -> Unit = {}) {
         val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val density = context.resources.displayMetrics.density
         val qrSize = (200 * density).toInt()
@@ -634,7 +746,7 @@ class BotPushModule : BaseModule() {
         scope.launch {
             withContext(Dispatchers.Main) {
                 dialog = MaterialAlertDialogBuilder(context)
-                    .setTitle("微信扫码绑定")
+                    .setTitle("微信扫码连接")
                     .setView(container)
                     .setNegativeButton("取消") { _, _ -> scope.cancel() }
                     .setOnDismissListener { scope.cancel() }
@@ -688,24 +800,36 @@ class BotPushModule : BaseModule() {
             }
 
             // 先把 token 落盘，后面补上 context_token 再覆盖一次
-            saveWechatBinding(WechatBinding(cred.token, cred.botId, cred.userId, ""))
+            val account = upsertWechatAccount(
+                WechatAccount(
+                    key = wechatAccountKey(cred.userId),
+                    label = wechatAccountLabel(cred.userId),
+                    token = cred.token,
+                    botId = cred.botId,
+                    userId = cred.userId,
+                    contextToken = ""
+                )
+            )
             withContext(Dispatchers.Main) {
                 imageView.visibility = View.GONE
                 statusView.text = "已登录，请在微信里给这个机器人发一条消息（随便发点什么）"
+                // 先让步骤指向这个账号，后面对上消息再刷新一次
+                onBound(account.key)
             }
 
             val contextToken = waitWechatContext(client, cred, 120_000L)
             if (contextToken == null) {
                 withContext(Dispatchers.Main) {
-                    statusView.text = "已登录，但还没收到你的消息。发一句给机器人后，再点一次「微信扫码绑定」就能补上"
+                    statusView.text = "已登录，但还没收到你的消息。发一句给机器人后，再点一次「测试连接」就能补上"
                 }
                 return@launch
             }
 
-            saveWechatBinding(WechatBinding(cred.token, cred.botId, cred.userId, contextToken))
+            upsertWechatAccount(account.copy(contextToken = contextToken))
             withContext(Dispatchers.Main) {
                 statusView.text = "绑定成功"
                 Toast.makeText(context, "微信绑定成功，可以推送了", Toast.LENGTH_SHORT).show()
+                onBound(account.key)
                 dialog?.dismiss()
             }
         }
@@ -817,13 +941,13 @@ class BotPushModule : BaseModule() {
             return ChannelResult(channel, false, 0, error = "AppID 与 AppSecret 都要填")
         }
 
-        // 会话 ID 只能靠握手拿到，没绑过就直接报错，不在这里挂着等
+        // 会话 ID 只能靠「测试连接」拿到，没绑过就直接报错，不在这里挂着等
         val bound = loadQqTarget(appId)
             ?: return ChannelResult(
                 channel,
                 false,
                 0,
-                error = "还没绑定 QQ 会话：在步骤编辑器点「QQ 握手」，再在 QQ 里给机器人发一条消息"
+                error = "还没绑定 QQ 会话：在步骤编辑器点「测试连接」，再在 QQ 里给机器人发一条消息"
             )
         val targetType = bound.type
         val targetId = bound.id

@@ -14,6 +14,7 @@ import android.view.ViewGroup
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import com.chaomixian.vflow.R
 import com.chaomixian.vflow.core.module.CustomEditorViewHolder
 import com.chaomixian.vflow.core.module.InputDefinition
@@ -26,6 +27,7 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 
 /** 一条推送通道在编辑器里的描述。 */
 internal data class BotChannelSpec(
@@ -95,6 +97,8 @@ internal class BotPushModuleUIProvider(
                 add(spec.enableId)
                 addAll(spec.fields)
             }
+            // 微信号由卡片里的选择器写入，不单独渲染一行
+            add("wechat_account")
         }
     }
 
@@ -230,6 +234,86 @@ internal class BotPushModuleUIProvider(
         }
         root.addView(cardsBox)
 
+        // buildCard 声明在 rebuildCards 之前，卡片里的按钮回调只能通过这个引用重建列表
+        var requestRebuild: () -> Unit = {}
+
+        /**
+         * 微信卡片下半部分：当前账号 + 「测试连接」+「切换 / 添加微信号」。
+         * 账号存在本机账号池里，每个步骤只记 key，所以不同步骤可以各用一个微信号。
+         */
+        fun addWechatAccountSection(box: LinearLayout) {
+            val accounts = module.wechatAccounts()
+            val selected = module.resolveWechatAccount(values["wechat_account"].asText())
+
+            box.addView(
+                TextView(context).apply {
+                    text = when {
+                        selected != null -> "当前微信号：${selected.label}"
+                        accounts.isEmpty() -> "还没绑定微信号，点下面按钮扫一个"
+                        else -> "本机绑了 ${accounts.size} 个微信号，点「切换」选一个"
+                    }
+                    textSize = 12f
+                    setTextColor(themeColor(context, com.google.android.material.R.attr.colorOnSurfaceVariant, Color.GRAY))
+                    setPadding(dp(16), 0, dp(16), 0)
+                }
+            )
+
+            fun selectAccount(key: String) {
+                values["wechat_account"] = key
+                onParametersChanged()
+                requestRebuild()
+            }
+
+            fun bindNew() {
+                module.startWechatQrLogin(context) { key -> selectAccount(key) }
+            }
+
+            fun showPicker() {
+                val list = module.wechatAccounts()
+                val items = list.map { it.label }.toTypedArray() + "扫码添加新微信号"
+                val builder = MaterialAlertDialogBuilder(context)
+                    .setTitle("选择微信号")
+                    .setItems(items) { _, which ->
+                        if (which < list.size) selectAccount(list[which].key) else bindNew()
+                    }
+                    .setNegativeButton("取消", null)
+                if (selected != null) {
+                    builder.setNeutralButton("解绑 ${selected.label}") { _, _ ->
+                        module.removeWechatAccount(selected.key)
+                        selectAccount("")
+                        Toast.makeText(context, "已解绑 ${selected.label}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                builder.show()
+            }
+
+            box.addView(
+                actionButton(
+                    label = if (selected != null) "重新测试（当前：${selected.label}）" else "测试连接",
+                    onClick = {
+                        when {
+                            accounts.isEmpty() -> bindNew()
+                            selected == null -> showPicker()
+                            selected.contextToken.isEmpty() -> bindNew()
+                            else -> module.sendTestMessage(selected.key)
+                        }
+                    },
+                    marginStartEnd = dp(16),
+                    marginTop = dp(6),
+                    marginBottom = dp(4)
+                )
+            )
+            box.addView(
+                actionButton(
+                    label = if (accounts.isEmpty()) "扫码添加微信号" else "切换 / 添加微信号",
+                    onClick = { if (accounts.isEmpty()) bindNew() else showPicker() },
+                    marginStartEnd = dp(16),
+                    marginTop = 0,
+                    marginBottom = dp(10)
+                )
+            )
+        }
+
         fun buildCard(spec: BotChannelSpec): View {
             val card = MaterialCardView(context).apply {
                 radius = dp(14).toFloat()
@@ -270,11 +354,26 @@ internal class BotPushModuleUIProvider(
             }
             val ready = spec.required.isNotEmpty() &&
                 spec.required.all { values[it].asText().isNotEmpty() }
-            if (spec.required.isEmpty()) {
-                // 微信没有手填项，只看有没有绑定过
-                status.text = if (module.channelBoundLabel(values, spec.enableId) != null) "已绑定" else "待扫码"
+            // 绑定结果存在本机（微信按账号、QQ 按 AppID），这里只反映当前是否真的连得上
+            val bound = module.channelBoundLabel(values, spec.enableId)
+            if (spec.enableId == "enable_wechat") {
+                // 没扫码 / 绑了多个但没选 / 选了还没收到消息 / 已连接
+                val account = module.resolveWechatAccount(values["wechat_account"].asText())
+                status.text = when {
+                    module.wechatAccounts().isEmpty() -> "待扫码"
+                    account == null -> "待选账号"
+                    account.contextToken.isEmpty() -> "待发消息"
+                    else -> "已连接"
+                }
+                if (account?.contextToken?.isNotEmpty() == true) {
+                    status.setTextColor(themeColor(context, androidx.appcompat.R.attr.colorPrimary, Color.BLUE))
+                }
             } else {
-                status.text = if (ready) "已配置" else "待填写"
+                status.text = when {
+                    !ready -> "待填写"
+                    bound != null -> "已连接"
+                    else -> "待连接"
+                }
                 if (ready) {
                     status.setTextColor(themeColor(context, androidx.appcompat.R.attr.colorPrimary, Color.BLUE))
                 }
@@ -311,22 +410,13 @@ internal class BotPushModuleUIProvider(
 
             spec.fields.forEach { addRow(it, fieldsBox) }
 
-            // 绑定类通道把按钮放进卡片，省得再去底部找
-            bindButtonFor(spec.enableId, context, values)?.let { (label, onClick) ->
-                fieldsBox.addView(actionButton(label, onClick, dp(16), dp(4), dp(8)))
-            }
-
-            // 微信给个测试入口，放在折叠区外面：绑好之后点一下就知道通不通
+            // 两条通道的连接方式一样：先在微信 / QQ 里发一条消息，再点这个按钮确认
             if (spec.enableId == "enable_wechat") {
-                box.addView(
-                    actionButton(
-                        label = "发送测试消息",
-                        onClick = { _ -> module.sendTestMessage() },
-                        marginStartEnd = dp(16),
-                        marginTop = dp(6),
-                        marginBottom = dp(10)
-                    )
-                )
+                addWechatAccountSection(box)
+            } else {
+                bindButtonFor(spec.enableId, context, values)?.let { (label, onClick) ->
+                    box.addView(actionButton(label, onClick, dp(16), dp(6), dp(10)))
+                }
             }
 
             card.addView(box)
@@ -345,6 +435,8 @@ internal class BotPushModuleUIProvider(
                 else -> "已选 $count 条，可同时发送"
             }
         }
+
+        requestRebuild = { rebuildCards() }
 
         fun toggleChannel(enableId: String, checked: Boolean) {
             readBack()
@@ -376,7 +468,7 @@ internal class BotPushModuleUIProvider(
         return editor.collect()
     }
 
-    /** 绑定按钮：QQ 握手、微信扫码，其它情况返回 null。 */
+    /** QQ 连接按钮：填完 AppID/AppSecret，点一下等消息即可。微信有账号选择器，单独处理。 */
     private fun bindButtonFor(
         enableId: String,
         context: Context,
@@ -385,13 +477,8 @@ internal class BotPushModuleUIProvider(
         "enable_qq" -> {
             val appId = values["qq_app_id"].asText()
             val bound = module.qqBoundLabel(appId)
-            val label = if (bound != null) "重新握手（当前：$bound）" else "QQ 握手（绑定会话）"
+            val label = if (bound != null) "重新测试（当前：$bound）" else "测试连接"
             label to { step: ActionStep -> module.startQqHandshake(step) }
-        }
-        "enable_wechat" -> {
-            val bound = module.wechatBoundLabel()
-            val label = if (bound != null) "重新扫码（当前：$bound）" else "微信扫码绑定"
-            label to { _: ActionStep -> module.startWechatQrLogin(context) }
         }
         else -> null
     }
